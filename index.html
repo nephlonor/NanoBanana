@@ -100,10 +100,7 @@
             PRO:   "gemini-3-pro-image-preview",
             FLASH: "gemini-3.1-flash-image-preview"
         };
-        const RETRY_STATUS_CODES = [429, 500, 502, 503, 504];
-        const MAX_RETRIES = 3;
-        const BASE_DELAY_MS = 2000;
-        const REQUEST_TIMEOUT_MS = 120000;
+        const RETRY_DELAY_MS = 2000;
 
         const API_SUPPORTED_RATIOS = [
             { value: "1:1", label: "1:1 (Square)", ratio: 1 },
@@ -267,64 +264,49 @@
 
         function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-        async function callApi(modelId, body) {
-            const apiKey = getKey();
-            const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent`;
-            const status = document.getElementById('statusMsg');
-            let lastErr = null;
-
-            for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-                const controller = new AbortController();
-                const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-                try {
-                    const response = await fetch(endpoint, {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
-                            'x-goog-api-key': apiKey
-                        },
-                        body: JSON.stringify(body),
-                        signal: controller.signal
-                    });
-                    clearTimeout(timeoutId);
-
-                    if (!response.ok) {
-                        let errMsg = `HTTP ${response.status}`;
-                        try {
-                            const errData = await response.json();
-                            if (errData.error && errData.error.message) errMsg = errData.error.message;
-                        } catch (_) {}
-
-                        if (RETRY_STATUS_CODES.includes(response.status) && attempt < MAX_RETRIES) {
-                            const delay = BASE_DELAY_MS * Math.pow(2, attempt);
-                            status.textContent = `Server busy (${response.status}). Retrying in ${Math.round(delay/1000)}s… (${attempt + 1}/${MAX_RETRIES})`;
-                            await sleep(delay);
-                            continue;
-                        }
-                        throw new Error(errMsg);
+        function buildBody(modelKey, parts) {
+            const modalities = modelKey === 'FLASH' ? ['IMAGE'] : ['TEXT', 'IMAGE'];
+            return {
+                contents: [{ role: 'user', parts }],
+                generationConfig: {
+                    responseModalities: modalities,
+                    imageConfig: {
+                        imageSize: currentRes,
+                        aspectRatio: ratioSelect.value
                     }
-
-                    const data = await response.json();
-                    if (data.error) throw new Error(data.error.message || "API Error");
-                    return data;
-
-                } catch (err) {
-                    clearTimeout(timeoutId);
-                    lastErr = err;
-                    const isTimeout = err.name === 'AbortError';
-                    const isNetwork = err.name === 'TypeError' || /network|failed to fetch/i.test(err.message);
-                    if (attempt < MAX_RETRIES && (isTimeout || isNetwork)) {
-                        const delay = BASE_DELAY_MS * Math.pow(2, attempt);
-                        const reason = isTimeout ? `Request timed out after ${REQUEST_TIMEOUT_MS/1000}s` : "Network issue";
-                        status.textContent = `${reason}. Retrying in ${Math.round(delay/1000)}s… (${attempt + 1}/${MAX_RETRIES})`;
-                        await sleep(delay);
-                        continue;
-                    }
-                    if (isTimeout) throw new Error(`Request timed out after ${REQUEST_TIMEOUT_MS/1000}s — model unresponsive`);
-                    throw err;
                 }
+            };
+        }
+
+        async function attemptGenerate(modelKey, parts) {
+            const apiKey = getKey();
+            const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${MODELS[modelKey]}:generateContent`;
+            const response = await fetch(endpoint, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+                body: JSON.stringify(buildBody(modelKey, parts))
+            });
+            if (!response.ok) {
+                let errMsg = `HTTP ${response.status}`;
+                try {
+                    const errData = await response.json();
+                    if (errData.error && errData.error.message) errMsg = errData.error.message;
+                } catch (_) {}
+                throw new Error(errMsg);
             }
-            throw lastErr || new Error("Unknown error");
+            const data = await response.json();
+            if (data.error) throw new Error(data.error.message || "API Error");
+            if (!data.candidates || !data.candidates[0]) throw new Error("No candidates returned (possible safety block)");
+
+            const responseParts = data.candidates[0].content && data.candidates[0].content.parts;
+            if (!responseParts || responseParts.length === 0) throw new Error("Empty response content");
+
+            const imagePart = responseParts.find(p => p.inlineData && p.inlineData.data);
+            if (!imagePart) {
+                const textPart = responseParts.find(p => p.text);
+                throw new Error(textPart ? `No image returned. Model said: ${textPart.text.slice(0, 120)}` : "No image in response");
+            }
+            return imagePart;
         }
 
         async function handleGenerate() {
@@ -350,60 +332,35 @@
             status.style.color = "#a0a0a0";
             status.textContent = `Crafting your image with ${currentModel}…`;
 
+            const parts = uploadedImages.map(img => ({ inlineData: { mimeType: img.mime, data: img.data } }));
+            parts.push({ text: prompt });
+
+            let imagePart;
             try {
-                const parts = uploadedImages.map(img => ({ inlineData: { mimeType: img.mime, data: img.data } }));
-                parts.push({ text: prompt });
-
-                const modalities = currentModel === 'FLASH' ? ['IMAGE'] : ['TEXT', 'IMAGE'];
-
-                const body = {
-                    contents: [{ role: 'user', parts }],
-                    generationConfig: {
-                        responseModalities: modalities,
-                        imageConfig: {
-                            imageSize: currentRes,
-                            aspectRatio: ratioSelect.value
-                        }
-                    }
-                };
-
-                const data = await callApi(MODELS[currentModel], body);
-
-                if (!data.candidates || !data.candidates[0]) {
-                    console.error("No candidates:", data);
-                    throw new Error("No candidates returned (possible safety block)");
+                imagePart = await attemptGenerate(currentModel, parts);
+            } catch (firstErr) {
+                console.error(`First attempt (${currentModel}) failed:`, firstErr);
+                status.textContent = `${currentModel} failed: ${firstErr.message}. Retrying with FLASH…`;
+                await sleep(RETRY_DELAY_MS);
+                try {
+                    imagePart = await attemptGenerate('FLASH', parts);
+                } catch (secondErr) {
+                    console.error("FLASH fallback failed:", secondErr);
+                    return finish(true, `Both attempts failed. ${secondErr.message}`);
                 }
-
-                const candidate = data.candidates[0];
-                const responseParts = candidate.content && candidate.content.parts;
-                if (!responseParts || responseParts.length === 0) {
-                    throw new Error("Empty response content");
-                }
-
-                const imagePart = responseParts.find(p => p.inlineData && p.inlineData.data);
-                if (!imagePart) {
-                    const textPart = responseParts.find(p => p.text);
-                    const msg = textPart ? `No image returned. Model said: ${textPart.text.slice(0, 120)}` : "No image in response";
-                    console.error("No image part. Parts:", responseParts);
-                    throw new Error(msg);
-                }
-
-                const b64 = imagePart.inlineData.data;
-                const mime = imagePart.inlineData.mimeType || 'image/png';
-                const newUrl = `data:${mime};base64,${b64}`;
-
-                const temp = new Image();
-                temp.onload = () => {
-                    outImg.src = newUrl;
-                    finish(false);
-                };
-                temp.onerror = () => finish(true, "Failed to decode image");
-                temp.src = newUrl;
-
-            } catch (err) {
-                console.error(err);
-                finish(true, err.message);
             }
+
+            const b64 = imagePart.inlineData.data;
+            const mime = imagePart.inlineData.mimeType || 'image/png';
+            const newUrl = `data:${mime};base64,${b64}`;
+
+            const temp = new Image();
+            temp.onload = () => {
+                outImg.src = newUrl;
+                finish(false);
+            };
+            temp.onerror = () => finish(true, "Failed to decode image");
+            temp.src = newUrl;
         }
 
         function finish(isError, errMsg) {
