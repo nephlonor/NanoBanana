@@ -31,10 +31,10 @@ async function runGenerate({ id, modelId, apiKey, body }) {
     let result;
     try {
         const response = await fetch(
-            `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent`,
+            `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${encodeURIComponent(apiKey)}`,
             {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(body)
             }
         );
