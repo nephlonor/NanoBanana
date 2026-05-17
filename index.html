@@ -192,6 +192,57 @@
             osc.stop(audioCtx.currentTime + 0.4);
         }
 
+        let keepAliveAudio = null;
+        let keepAliveUrl = null;
+
+        function buildKeepAliveWav() {
+            const sampleRate = 8000;
+            const numSamples = sampleRate;
+            const buf = new ArrayBuffer(44 + numSamples);
+            const view = new DataView(buf);
+            const bytes = new Uint8Array(buf);
+            view.setUint32(0, 0x52494646, false);
+            view.setUint32(4, 36 + numSamples, true);
+            view.setUint32(8, 0x57415645, false);
+            view.setUint32(12, 0x666d7420, false);
+            view.setUint32(16, 16, true);
+            view.setUint16(20, 1, true);
+            view.setUint16(22, 1, true);
+            view.setUint32(24, sampleRate, true);
+            view.setUint32(28, sampleRate, true);
+            view.setUint16(32, 1, true);
+            view.setUint16(34, 8, true);
+            view.setUint32(36, 0x64617461, false);
+            view.setUint32(40, numSamples, true);
+            for (let i = 0; i < numSamples; i++) {
+                bytes[44 + i] = 128 + (Math.random() < 0.5 ? -1 : 1);
+            }
+            return URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
+        }
+
+        function startKeepAlive() {
+            try {
+                if (!keepAliveUrl) keepAliveUrl = buildKeepAliveWav();
+                if (!keepAliveAudio) {
+                    keepAliveAudio = new Audio(keepAliveUrl);
+                    keepAliveAudio.loop = true;
+                    keepAliveAudio.volume = 0.01;
+                }
+                const p = keepAliveAudio.play();
+                if (p && p.catch) p.catch((e) => console.warn('keepAlive play failed:', e));
+            } catch (e) {
+                console.warn('keepAlive start failed:', e);
+            }
+        }
+
+        function stopKeepAlive() {
+            if (!keepAliveAudio) return;
+            try {
+                keepAliveAudio.pause();
+                keepAliveAudio.currentTime = 0;
+            } catch (_) {}
+        }
+
         function setRes(val) {
             currentRes = val;
             document.getElementById('btn2K').classList.toggle('active-res', val === '2K');
@@ -404,7 +455,8 @@
             genBtn.classList.add('loading-btn');
             genBtn.textContent = "PROCESSING...";
             status.style.color = "#a0a0a0";
-            status.textContent = `Crafting your image with ${currentModel}…`;
+            status.textContent = `Crafting your image with ${currentModel}… (safe to background)`;
+            startKeepAlive();
 
             const parts = uploadedImages.map(img => ({ inlineData: { mimeType: img.mime, data: img.data } }));
             parts.push({ text: prompt });
@@ -438,6 +490,7 @@
         }
 
         function finish(isError, errMsg) {
+            stopKeepAlive();
             const genBtn = document.getElementById('genBtn');
             const status = document.getElementById('statusMsg');
 
