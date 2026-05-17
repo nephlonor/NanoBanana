@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+    <title>Nano-Banana-Pro</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; background-color: #0d0d0d; color: #f0f0f0; -webkit-tap-highlight-color: transparent; }
+        .bg-container { background-color: #1a1a1a; }
+        .bg-input, .bg-secondary { background-color: #2c2c2c; color: #f0f0f0; }
+        .bg-red-accent { background-color: #dc2626; }
+        .active-res { background-color: #dc2626 !important; box-shadow: 0 0 10px rgba(220, 38, 38, 0.5); }
+
+        @keyframes pulse-red {
+            0%, 100% { background-color: #dc2626; }
+            50% { background-color: #991b1b; }
+        }
+        .loading-btn { animation: pulse-red 1.5s infinite; pointer-events: none; opacity: 0.9; }
+
+        .preview-container { position: relative; border-radius: 0.5rem; overflow: hidden; cursor: pointer; }
+        .delete-btn {
+            position: absolute; top: 4px; right: 4px; width: 22px; height: 22px;
+            background: rgba(220, 38, 38, 0.9); border-radius: 50%; color: white;
+            display: flex; align-items: center; justify-content: center; font-size: 14px;
+        }
+
+        .modal {
+            position: fixed; inset: 0; background: rgba(0,0,0,0.95);
+            z-index: 100; display: none; align-items: center; justify-content: center;
+        }
+    </style>
+</head>
+<body class="p-4 flex flex-col items-center">
+
+    <div class="w-full max-w-2xl bg-container p-6 md:p-8 rounded-2xl shadow-2xl">
+        <h1 class="text-3xl font-bold text-center mb-6">Nano-Banana-Pro</h1>
+
+        <details id="keyDetails" class="mb-4 bg-input rounded-xl border border-gray-700">
+            <summary class="px-4 py-3 cursor-pointer text-sm font-semibold select-none">
+                <span id="keyStatus">API Key: not set</span>
+            </summary>
+            <div class="px-4 pb-4 pt-2">
+                <input id="apiKeyInput" type="password" autocomplete="off" placeholder="Paste your Gemini API key"
+                    class="w-full bg-secondary p-3 rounded-lg border-none focus:ring-2 focus:ring-red-600 text-sm mb-2">
+                <div class="flex gap-2">
+                    <button onclick="saveKey()" class="flex-1 py-2 bg-red-accent rounded-lg text-sm font-bold active:scale-95 transition">Save</button>
+                    <button onclick="clearKey()" class="flex-1 py-2 bg-secondary rounded-lg text-sm font-bold active:scale-95 transition">Clear</button>
+                </div>
+                <p class="text-[10px] text-gray-500 mt-2">Stored only in this browser's localStorage. Get a key at aistudio.google.com.</p>
+            </div>
+        </details>
+
+        <div class="flex justify-end items-center gap-4 mb-6">
+            <div class="flex bg-gray-700 p-1 rounded-full">
+                <button onclick="setRes('2K')" id="btn2K" class="px-4 py-1 rounded-full text-xs font-bold active-res">2K</button>
+                <button onclick="setRes('4K')" id="btn4K" class="px-4 py-1 rounded-full text-xs font-bold">4K</button>
+            </div>
+            <select id="aspectRatioSelect" class="bg-input border-none text-sm rounded-lg p-2 focus:ring-2 focus:ring-red-600">
+                </select>
+        </div>
+
+        <div class="mb-4 border border-gray-600 rounded-xl bg-input overflow-hidden">
+            <label class="block w-full py-4 bg-red-accent text-center font-bold cursor-pointer hover:bg-red-700 transition">
+                Upload Source Images
+                <input type="file" id="imageUpload" multiple accept="image/*" class="hidden">
+            </label>
+            <p id="imageCount" class="text-xs text-gray-500 px-3 py-2 text-center">0 images uploaded. Max 20.</p>
+        </div>
+
+        <div id="previewGrid" class="grid grid-cols-4 gap-3 mb-4"></div>
+        <p id="previewHint" class="text-[10px] text-gray-500 mb-4 hidden">Tap preview to enlarge • Tap X to remove</p>
+
+        <textarea id="prompt" rows="3" placeholder="Describe changes or new image..."
+            class="w-full bg-input p-4 rounded-xl border-none focus:ring-2 focus:ring-red-600 mb-4 resize-none"></textarea>
+
+        <button id="genBtn" onclick="handleGenerate()" class="w-full py-4 bg-red-accent rounded-xl font-bold shadow-lg active:scale-95 transition mb-6">
+            GENERATE
+        </button>
+
+        <div class="relative w-full aspect-square bg-black rounded-xl overflow-hidden border border-gray-800">
+            <img id="outputImg" class="w-full h-full object-contain" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7">
+        </div>
+        <p id="statusMsg" class="text-center text-xs mt-3 text-gray-500 font-medium">Ready</p>
+    </div>
+
+    <div id="imageModal" class="modal" onclick="this.style.display='none'">
+        <img id="modalImg" class="max-w-[95%] max-height-[90%] shadow-2xl rounded-lg">
+    </div>
+
+    <script>
+        const API_SUPPORTED_RATIOS = [
+            { value: "1:1", label: "1:1 (Square)", ratio: 1 },
+            { value: "16:9", label: "16:9 (Landscape)", ratio: 16/9 },
+            { value: "9:16", label: "9:16 (Portrait)", ratio: 9/16 },
+            { value: "4:3", label: "4:3 (Traditional L)", ratio: 4/3 },
+            { value: "3:4", label: "3:4 (Traditional P)", ratio: 3/4 },
+            { value: "3:2", label: "3:2 (Photo L)", ratio: 3/2 },
+            { value: "2:3", label: "2:3 (Photo P)", ratio: 2/3 },
+            { value: "4:5", label: "4:5 (Classic P)", ratio: 4/5 },
+            { value: "5:4", label: "5:4 (Classic L)", ratio: 5/4 },
+            { value: "21:9", label: "21:9 (Cinematic)", ratio: 21/9 }
+        ];
+
+        const KEY_STORAGE = 'nanobanana_api_key';
+        let uploadedImages = [];
+        let currentRes = "2K";
+        let audioCtx = null;
+
+        const ratioSelect = document.getElementById('aspectRatioSelect');
+        API_SUPPORTED_RATIOS.forEach(r => {
+            const opt = document.createElement('option');
+            opt.value = r.value; opt.textContent = r.label;
+            ratioSelect.appendChild(opt);
+        });
+
+        function getKey() {
+            return localStorage.getItem(KEY_STORAGE) || '';
+        }
+
+        function updateKeyStatus() {
+            const k = getKey();
+            const status = document.getElementById('keyStatus');
+            const details = document.getElementById('keyDetails');
+            if (k) {
+                status.textContent = `API Key: set (…${k.slice(-4)})`;
+                details.open = false;
+            } else {
+                status.textContent = 'API Key: not set — tap to add';
+                details.open = true;
+            }
+        }
+
+        function saveKey() {
+            const v = document.getElementById('apiKeyInput').value.trim();
+            if (!v) return;
+            localStorage.setItem(KEY_STORAGE, v);
+            document.getElementById('apiKeyInput').value = '';
+            updateKeyStatus();
+        }
+
+        function clearKey() {
+            localStorage.removeItem(KEY_STORAGE);
+            updateKeyStatus();
+        }
+
+        updateKeyStatus();
+
+        function unlockAudio() {
+            if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            if (audioCtx.state === 'suspended') audioCtx.resume();
+        }
+
+        function playRisingBing(isError = false) {
+            if (!audioCtx) return;
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = 'sine';
+
+            if (isError) {
+                osc.frequency.setValueAtTime(200, audioCtx.currentTime);
+                osc.frequency.linearRampToValueAtTime(100, audioCtx.currentTime + 0.3);
+            } else {
+                osc.frequency.setValueAtTime(440, audioCtx.currentTime);
+                osc.frequency.exponentialRampToValueAtTime(880, audioCtx.currentTime + 0.2);
+            }
+
+            gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.4);
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            osc.start();
+            osc.stop(audioCtx.currentTime + 0.4);
+        }
+
+        function setRes(val) {
+            currentRes = val;
+            document.getElementById('btn2K').classList.toggle('active-res', val === '2K');
+            document.getElementById('btn4K').classList.toggle('active-res', val === '4K');
+        }
+
+        function findClosestRatio(actualRatio) {
+            return API_SUPPORTED_RATIOS.reduce((prev, curr) =>
+                Math.abs(curr.ratio - actualRatio) < Math.abs(prev.ratio - actualRatio) ? curr : prev
+            );
+        }
+
+        document.getElementById('imageUpload').addEventListener('change', (e) => {
+            const files = Array.from(e.target.files);
+            files.forEach(file => {
+                if (uploadedImages.length >= 20) return;
+                const reader = new FileReader();
+                reader.onload = (ev) => {
+                    const tempImg = new Image();
+                    tempImg.onload = () => {
+                        if (uploadedImages.length === 0) {
+                            const best = findClosestRatio(tempImg.width / tempImg.height);
+                            ratioSelect.value = best.value;
+                        }
+                        const id = Date.now() + Math.random();
+                        uploadedImages.push({ id, data: ev.target.result.split(',')[1], mime: file.type, url: ev.target.result });
+                        renderPreviews();
+                    };
+                    tempImg.src = ev.target.result;
+                };
+                reader.readAsDataURL(file);
+            });
+        });
+
+        function renderPreviews() {
+            const grid = document.getElementById('previewGrid');
+            const count = document.getElementById('imageCount');
+            const hint = document.getElementById('previewHint');
+            grid.innerHTML = '';
+
+            uploadedImages.forEach(img => {
+                const div = document.createElement('div');
+                div.className = "preview-container aspect-square bg-secondary";
+                div.innerHTML = `
+                    <img src="${img.url}" class="w-full h-full object-cover" onclick="enlarge('${img.url}')">
+                    <button class="delete-btn" onclick="removeImg(${img.id})">&times;</button>
+                `;
+                grid.appendChild(div);
+            });
+
+            count.textContent = `${uploadedImages.length} images uploaded. Max 20.`;
+            hint.classList.toggle('hidden', uploadedImages.length === 0);
+        }
+
+        function removeImg(id) {
+            uploadedImages = uploadedImages.filter(i => i.id !== id);
+            renderPreviews();
+        }
+
+        function enlarge(url) {
+            document.getElementById('modalImg').src = url;
+            document.getElementById('imageModal').style.display = 'flex';
+        }
+
+        async function handleGenerate() {
+            unlockAudio();
+            const apiKey = getKey();
+            const prompt = document.getElementById('prompt').value;
+            const genBtn = document.getElementById('genBtn');
+            const status = document.getElementById('statusMsg');
+            const outImg = document.getElementById('outputImg');
+
+            if (!apiKey) {
+                playRisingBing(true);
+                document.getElementById('keyDetails').open = true;
+                return alert("API key required. Add it in the panel at the top.");
+            }
+
+            if (!prompt) {
+                playRisingBing(true);
+                return alert("Prompt required");
+            }
+
+            genBtn.classList.add('loading-btn');
+            genBtn.textContent = "PROCESSING...";
+            status.textContent = "Crafting your image...";
+
+            try {
+                const parts = uploadedImages.map(img => ({ inlineData: { mimeType: img.mime, data: img.data } }));
+                parts.push({ text: prompt });
+
+                const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3-pro-image-preview:generateContent?key=${encodeURIComponent(apiKey)}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        contents: [{ parts }],
+                        generationConfig: {
+                            responseModalities: ['IMAGE'],
+                            imageConfig: { imageSize: currentRes, aspectRatio: ratioSelect.value }
+                        }
+                    })
+                });
+
+                const data = await response.json();
+                if (!data.candidates) throw new Error("Safety Block or API Error");
+
+                const b64 = data.candidates[0].content.parts[0].inlineData.data;
+                const newUrl = `data:image/png;base64,${b64}`;
+
+                const temp = new Image();
+                temp.onload = () => {
+                    outImg.src = newUrl;
+                    finish(false);
+                };
+                temp.src = newUrl;
+
+            } catch (err) {
+                console.error(err);
+                finish(true);
+            }
+        }
+
+        function finish(isError) {
+            const genBtn = document.getElementById('genBtn');
+            const status = document.getElementById('statusMsg');
+
+            genBtn.classList.remove('loading-btn');
+            genBtn.textContent = "GENERATE";
+
+            if (isError) {
+                status.textContent = "Error: Prompt blocked or Server busy.";
+                status.style.color = "#f87171";
+            } else {
+                status.textContent = "Generation Complete";
+                status.style.color = "#a0a0a0";
+            }
+
+            playRisingBing(isError);
+            if (navigator.vibrate) navigator.vibrate(200);
+        }
+    </script>
+</body>
+</html>
