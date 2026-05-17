@@ -52,13 +52,19 @@
             </div>
         </details>
 
-        <div class="flex justify-end items-center gap-4 mb-6">
+        <div class="flex justify-between items-center gap-4 mb-6 flex-wrap">
             <div class="flex bg-gray-700 p-1 rounded-full">
-                <button onclick="setRes('2K')" id="btn2K" class="px-4 py-1 rounded-full text-xs font-bold active-res">2K</button>
-                <button onclick="setRes('4K')" id="btn4K" class="px-4 py-1 rounded-full text-xs font-bold">4K</button>
+                <button onclick="setModel('PRO')" id="btnPRO" class="px-4 py-1 rounded-full text-xs font-bold active-res">PRO</button>
+                <button onclick="setModel('FLASH')" id="btnFLASH" class="px-4 py-1 rounded-full text-xs font-bold">FLASH</button>
             </div>
-            <select id="aspectRatioSelect" class="bg-input border-none text-sm rounded-lg p-2 focus:ring-2 focus:ring-red-600">
+            <div class="flex items-center gap-4">
+                <div class="flex bg-gray-700 p-1 rounded-full">
+                    <button onclick="setRes('2K')" id="btn2K" class="px-4 py-1 rounded-full text-xs font-bold active-res">2K</button>
+                    <button onclick="setRes('4K')" id="btn4K" class="px-4 py-1 rounded-full text-xs font-bold">4K</button>
+                </div>
+                <select id="aspectRatioSelect" class="bg-input border-none text-sm rounded-lg p-2 focus:ring-2 focus:ring-red-600">
                 </select>
+            </div>
         </div>
 
         <div class="mb-4 border border-gray-600 rounded-xl bg-input overflow-hidden">
@@ -90,6 +96,15 @@
     </div>
 
     <script>
+        const MODELS = {
+            PRO:   "gemini-3-pro-image-preview",
+            FLASH: "gemini-3.1-flash-image-preview"
+        };
+        const RETRY_STATUS_CODES = [429, 500, 502, 503, 504];
+        const MAX_RETRIES = 3;
+        const BASE_DELAY_MS = 2000;
+        const REQUEST_TIMEOUT_MS = 120000;
+
         const API_SUPPORTED_RATIOS = [
             { value: "1:1", label: "1:1 (Square)", ratio: 1 },
             { value: "16:9", label: "16:9 (Landscape)", ratio: 16/9 },
@@ -106,6 +121,7 @@
         const KEY_STORAGE = 'nanobanana_api_key';
         let uploadedImages = [];
         let currentRes = "2K";
+        let currentModel = "PRO";
         let audioCtx = null;
 
         const ratioSelect = document.getElementById('aspectRatioSelect');
@@ -115,9 +131,7 @@
             ratioSelect.appendChild(opt);
         });
 
-        function getKey() {
-            return localStorage.getItem(KEY_STORAGE) || '';
-        }
+        function getKey() { return localStorage.getItem(KEY_STORAGE) || ''; }
 
         function updateKeyStatus() {
             const k = getKey();
@@ -187,6 +201,12 @@
             document.getElementById('btn4K').classList.toggle('active-res', val === '4K');
         }
 
+        function setModel(val) {
+            currentModel = val;
+            document.getElementById('btnPRO').classList.toggle('active-res', val === 'PRO');
+            document.getElementById('btnFLASH').classList.toggle('active-res', val === 'FLASH');
+        }
+
         function findClosestRatio(actualRatio) {
             return API_SUPPORTED_RATIOS.reduce((prev, curr) =>
                 Math.abs(curr.ratio - actualRatio) < Math.abs(prev.ratio - actualRatio) ? curr : prev
@@ -245,18 +265,79 @@
             document.getElementById('imageModal').style.display = 'flex';
         }
 
+        function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+        async function callApi(modelId, body) {
+            const apiKey = getKey();
+            const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent`;
+            const status = document.getElementById('statusMsg');
+            let lastErr = null;
+
+            for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+                try {
+                    const response = await fetch(endpoint, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'x-goog-api-key': apiKey
+                        },
+                        body: JSON.stringify(body),
+                        signal: controller.signal
+                    });
+                    clearTimeout(timeoutId);
+
+                    if (!response.ok) {
+                        let errMsg = `HTTP ${response.status}`;
+                        try {
+                            const errData = await response.json();
+                            if (errData.error && errData.error.message) errMsg = errData.error.message;
+                        } catch (_) {}
+
+                        if (RETRY_STATUS_CODES.includes(response.status) && attempt < MAX_RETRIES) {
+                            const delay = BASE_DELAY_MS * Math.pow(2, attempt);
+                            status.textContent = `Server busy (${response.status}). Retrying in ${Math.round(delay/1000)}s… (${attempt + 1}/${MAX_RETRIES})`;
+                            await sleep(delay);
+                            continue;
+                        }
+                        throw new Error(errMsg);
+                    }
+
+                    const data = await response.json();
+                    if (data.error) throw new Error(data.error.message || "API Error");
+                    return data;
+
+                } catch (err) {
+                    clearTimeout(timeoutId);
+                    lastErr = err;
+                    const isTimeout = err.name === 'AbortError';
+                    const isNetwork = err.name === 'TypeError' || /network|failed to fetch/i.test(err.message);
+                    if (attempt < MAX_RETRIES && (isTimeout || isNetwork)) {
+                        const delay = BASE_DELAY_MS * Math.pow(2, attempt);
+                        const reason = isTimeout ? `Request timed out after ${REQUEST_TIMEOUT_MS/1000}s` : "Network issue";
+                        status.textContent = `${reason}. Retrying in ${Math.round(delay/1000)}s… (${attempt + 1}/${MAX_RETRIES})`;
+                        await sleep(delay);
+                        continue;
+                    }
+                    if (isTimeout) throw new Error(`Request timed out after ${REQUEST_TIMEOUT_MS/1000}s — model unresponsive`);
+                    throw err;
+                }
+            }
+            throw lastErr || new Error("Unknown error");
+        }
+
         async function handleGenerate() {
             unlockAudio();
-            const apiKey = getKey();
             const prompt = document.getElementById('prompt').value;
             const genBtn = document.getElementById('genBtn');
             const status = document.getElementById('statusMsg');
             const outImg = document.getElementById('outputImg');
 
-            if (!apiKey) {
+            if (!getKey()) {
                 playRisingBing(true);
                 document.getElementById('keyDetails').open = true;
-                return alert("API key required. Add it in the panel at the top.");
+                return alert("API key required. Add it in the panel.");
             }
 
             if (!prompt) {
@@ -266,44 +347,66 @@
 
             genBtn.classList.add('loading-btn');
             genBtn.textContent = "PROCESSING...";
-            status.textContent = "Crafting your image...";
+            status.style.color = "#a0a0a0";
+            status.textContent = `Crafting your image with ${currentModel}…`;
 
             try {
                 const parts = uploadedImages.map(img => ({ inlineData: { mimeType: img.mime, data: img.data } }));
                 parts.push({ text: prompt });
 
-                const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3-pro-image-preview:generateContent?key=${encodeURIComponent(apiKey)}`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        contents: [{ parts }],
-                        generationConfig: {
-                            responseModalities: ['IMAGE'],
-                            imageConfig: { imageSize: currentRes, aspectRatio: ratioSelect.value }
+                const modalities = currentModel === 'FLASH' ? ['IMAGE'] : ['TEXT', 'IMAGE'];
+
+                const body = {
+                    contents: [{ role: 'user', parts }],
+                    generationConfig: {
+                        responseModalities: modalities,
+                        imageConfig: {
+                            imageSize: currentRes,
+                            aspectRatio: ratioSelect.value
                         }
-                    })
-                });
+                    }
+                };
 
-                const data = await response.json();
-                if (!data.candidates) throw new Error("Safety Block or API Error");
+                const data = await callApi(MODELS[currentModel], body);
 
-                const b64 = data.candidates[0].content.parts[0].inlineData.data;
-                const newUrl = `data:image/png;base64,${b64}`;
+                if (!data.candidates || !data.candidates[0]) {
+                    console.error("No candidates:", data);
+                    throw new Error("No candidates returned (possible safety block)");
+                }
+
+                const candidate = data.candidates[0];
+                const responseParts = candidate.content && candidate.content.parts;
+                if (!responseParts || responseParts.length === 0) {
+                    throw new Error("Empty response content");
+                }
+
+                const imagePart = responseParts.find(p => p.inlineData && p.inlineData.data);
+                if (!imagePart) {
+                    const textPart = responseParts.find(p => p.text);
+                    const msg = textPart ? `No image returned. Model said: ${textPart.text.slice(0, 120)}` : "No image in response";
+                    console.error("No image part. Parts:", responseParts);
+                    throw new Error(msg);
+                }
+
+                const b64 = imagePart.inlineData.data;
+                const mime = imagePart.inlineData.mimeType || 'image/png';
+                const newUrl = `data:${mime};base64,${b64}`;
 
                 const temp = new Image();
                 temp.onload = () => {
                     outImg.src = newUrl;
                     finish(false);
                 };
+                temp.onerror = () => finish(true, "Failed to decode image");
                 temp.src = newUrl;
 
             } catch (err) {
                 console.error(err);
-                finish(true);
+                finish(true, err.message);
             }
         }
 
-        function finish(isError) {
+        function finish(isError, errMsg) {
             const genBtn = document.getElementById('genBtn');
             const status = document.getElementById('statusMsg');
 
@@ -311,7 +414,7 @@
             genBtn.textContent = "GENERATE";
 
             if (isError) {
-                status.textContent = "Error: Prompt blocked or Server busy.";
+                status.textContent = errMsg ? `Error: ${errMsg}` : "Error: Prompt blocked or Server busy.";
                 status.style.color = "#f87171";
             } else {
                 status.textContent = "Generation Complete";
