@@ -123,12 +123,19 @@
             const k = getKey();
             const status = document.getElementById('keyStatus');
             const details = document.getElementById('keyDetails');
+            const container = details.parentElement;
             if (k) {
                 status.textContent = `API Key: set (…${k.slice(-4)})`;
                 details.open = false;
+                details.classList.add('mt-2');
+                details.classList.remove('mb-4');
+                container.appendChild(details);
             } else {
                 status.textContent = 'API Key: not set — tap to add';
                 details.open = true;
+                details.classList.add('mb-4');
+                details.classList.remove('mt-2');
+                container.insertBefore(details, container.children[1]);
             }
         }
 
