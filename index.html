@@ -264,6 +264,62 @@
 
         function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
+        const PENDING_KEY = 'nb_pending_request_id';
+        const pendingResolvers = new Map();
+        let swReadyPromise = null;
+
+        function ensureServiceWorker() {
+            if (swReadyPromise) return swReadyPromise;
+            if (!('serviceWorker' in navigator)) return Promise.resolve(null);
+            swReadyPromise = (async () => {
+                try {
+                    await navigator.serviceWorker.register('sw.js');
+                    await navigator.serviceWorker.ready;
+                    if (!navigator.serviceWorker.controller) {
+                        await new Promise(resolve => {
+                            const handler = () => {
+                                navigator.serviceWorker.removeEventListener('controllerchange', handler);
+                                resolve();
+                            };
+                            navigator.serviceWorker.addEventListener('controllerchange', handler);
+                            setTimeout(resolve, 1500);
+                        });
+                    }
+                    return navigator.serviceWorker.controller;
+                } catch (e) {
+                    console.warn('SW registration failed:', e);
+                    return null;
+                }
+            })();
+            return swReadyPromise;
+        }
+
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.addEventListener('message', (e) => {
+                const msg = e.data;
+                if (!msg || msg.type !== 'result') return;
+                const r = pendingResolvers.get(msg.id);
+                if (!r) return;
+                pendingResolvers.delete(msg.id);
+                if (sessionStorage.getItem(PENDING_KEY) === msg.id) {
+                    sessionStorage.removeItem(PENDING_KEY);
+                }
+                navigator.serviceWorker.controller && navigator.serviceWorker.controller.postMessage({ type: 'ack', id: msg.id });
+                if (msg.ok) r.resolve(msg.data);
+                else r.reject(new Error(msg.error || 'Generation failed'));
+            });
+        }
+
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState !== 'visible') return;
+            const pendingId = sessionStorage.getItem(PENDING_KEY);
+            if (pendingId && pendingResolvers.has(pendingId) && navigator.serviceWorker.controller) {
+                navigator.serviceWorker.controller.postMessage({ type: 'check', id: pendingId });
+            }
+        });
+
+        ensureServiceWorker();
+
         function buildBody(modelKey, parts) {
             const modalities = modelKey === 'FLASH' ? ['IMAGE'] : ['TEXT', 'IMAGE'];
             return {
@@ -278,14 +334,27 @@
             };
         }
 
-        async function attemptGenerate(modelKey, parts) {
+        async function callApi(modelKey, body) {
             const apiKey = getKey();
-            const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${MODELS[modelKey]}:generateContent`;
-            const response = await fetch(endpoint, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
-                body: JSON.stringify(buildBody(modelKey, parts))
-            });
+            const modelId = MODELS[modelKey];
+            const controller = await ensureServiceWorker();
+            if (controller) {
+                const id = (crypto.randomUUID && crypto.randomUUID()) || `${Date.now()}-${Math.random()}`;
+                sessionStorage.setItem(PENDING_KEY, id);
+                const promise = new Promise((resolve, reject) => {
+                    pendingResolvers.set(id, { resolve, reject });
+                });
+                controller.postMessage({ type: 'generate', id, modelId, apiKey, body });
+                return promise;
+            }
+            const response = await fetch(
+                `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent`,
+                {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+                    body: JSON.stringify(body)
+                }
+            );
             if (!response.ok) {
                 let errMsg = `HTTP ${response.status}`;
                 try {
@@ -296,6 +365,11 @@
             }
             const data = await response.json();
             if (data.error) throw new Error(data.error.message || "API Error");
+            return data;
+        }
+
+        async function attemptGenerate(modelKey, parts) {
+            const data = await callApi(modelKey, buildBody(modelKey, parts));
             if (!data.candidates || !data.candidates[0]) throw new Error("No candidates returned (possible safety block)");
 
             const responseParts = data.candidates[0].content && data.candidates[0].content.parts;
