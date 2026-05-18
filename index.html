@@ -104,7 +104,7 @@
                 <span id="historyCount" class="text-[10px] text-gray-500 font-normal"></span>
             </summary>
             <div class="px-3 pb-3 pt-1">
-                <div id="historyGrid" class="grid grid-cols-4 gap-2"></div>
+                <div id="historyGrid" class="grid grid-cols-2 sm:grid-cols-3 gap-3"></div>
                 <div class="flex justify-end mt-2">
                     <button id="historyClearBtn" class="text-[10px] text-gray-500 hover:text-red-500 transition">Clear history</button>
                 </div>
@@ -422,25 +422,51 @@
             } catch (_) {}
         }
 
+        function formatTime(ts) {
+            const d = new Date(ts);
+            const today = new Date();
+            const sameDay = d.toDateString() === today.toDateString();
+            const opts = sameDay
+                ? { hour: '2-digit', minute: '2-digit' }
+                : { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' };
+            return d.toLocaleString(undefined, opts);
+        }
+
         async function renderHistory() {
             const grid = document.getElementById('historyGrid');
             const items = await getHistory();
             grid.innerHTML = '';
             if (items.length === 0) {
-                grid.innerHTML = '<p class="col-span-4 text-center text-xs text-gray-500 py-6">No images yet.</p>';
+                grid.innerHTML = '<p class="col-span-2 sm:col-span-3 text-center text-xs text-gray-500 py-6">No images yet.</p>';
                 return;
             }
             items.forEach(item => {
-                const div = document.createElement('div');
-                div.className = 'preview-container aspect-square bg-secondary';
-                div.title = `${item.model} • ${item.res} • ${item.ratio}\n${item.prompt}`;
+                const card = document.createElement('div');
+                card.className = 'bg-secondary rounded-lg overflow-hidden flex flex-col';
+
+                const imgWrap = document.createElement('div');
+                imgWrap.className = 'aspect-square bg-black cursor-pointer';
                 const img = document.createElement('img');
                 img.src = item.dataUrl;
                 img.loading = 'lazy';
                 img.className = 'w-full h-full object-cover';
                 img.addEventListener('click', () => enlarge(item.dataUrl));
-                div.appendChild(img);
-                grid.appendChild(div);
+                imgWrap.appendChild(img);
+
+                const meta = document.createElement('div');
+                meta.className = 'p-2 text-xs flex-1 flex flex-col gap-1';
+                meta.innerHTML = `
+                    <div class="text-[10px] text-gray-400 font-semibold tracking-wide flex justify-between gap-2">
+                        <span>${item.model} • ${item.res} • ${item.ratio}</span>
+                        <span class="text-gray-500 font-normal whitespace-nowrap">${formatTime(item.timestamp)}</span>
+                    </div>
+                    <div class="text-[11px] text-gray-200 leading-snug break-words"></div>
+                `;
+                meta.querySelector('div:last-child').textContent = item.prompt;
+
+                card.appendChild(imgWrap);
+                card.appendChild(meta);
+                grid.appendChild(card);
             });
         }
 
