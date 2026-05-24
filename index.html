@@ -11,26 +11,43 @@
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="apple-mobile-web-app-title" content="Nano-Banana-Pro">
-    <meta name="theme-color" content="#1e6fd9">
+    <meta name="theme-color" content="#0d9488">
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
     <style>
-        body { font-family: 'Inter', sans-serif; background-color: #0d0d0d; color: #f0f0f0; -webkit-tap-highlight-color: transparent; }
-        .bg-container { background-color: #1a1a1a; }
-        .bg-input, .bg-secondary { background-color: #2c2c2c; color: #f0f0f0; }
-        .bg-red-accent { background-color: #dc2626; }
-        .active-res { background-color: #dc2626 !important; box-shadow: 0 0 10px rgba(220, 38, 38, 0.5); }
-
-        @keyframes pulse-red {
-            0%, 100% { background-color: #dc2626; }
-            50% { background-color: #991b1b; }
+        body {
+            font-family: 'Inter', sans-serif;
+            background: linear-gradient(160deg, #0a0f0e 0%, #0d1a17 50%, #061612 100%);
+            min-height: 100vh;
+            color: #f0f0f0;
+            -webkit-tap-highlight-color: transparent;
         }
-        .loading-btn { animation: pulse-red 1.5s infinite; pointer-events: none; opacity: 0.9; }
+        .bg-container {
+            background: linear-gradient(170deg, #1a1f1e 0%, #182523 100%);
+        }
+        .bg-input, .bg-secondary { background-color: #2c302f; color: #f0f0f0; }
+        .bg-accent {
+            background-image: linear-gradient(135deg, #0d9488 0%, #059669 100%);
+            transition: filter 0.15s ease;
+        }
+        .bg-accent:hover { filter: brightness(1.15); }
+        .active-res {
+            background-image: linear-gradient(135deg, #14b8a6 0%, #10b981 100%) !important;
+            background-color: transparent !important;
+            box-shadow: 0 0 12px rgba(20, 184, 166, 0.45);
+        }
+        .ring-accent:focus { outline: none; box-shadow: 0 0 0 2px #14b8a6; }
+
+        @keyframes pulse-accent {
+            0%, 100% { background-image: linear-gradient(135deg, #14b8a6 0%, #10b981 100%); }
+            50%      { background-image: linear-gradient(135deg, #0f766e 0%, #047857 100%); }
+        }
+        .loading-btn { animation: pulse-accent 1.5s infinite; pointer-events: none; opacity: 0.9; }
 
         .preview-container { position: relative; border-radius: 0.5rem; overflow: hidden; cursor: pointer; }
         .delete-btn {
             position: absolute; top: 4px; right: 4px; width: 22px; height: 22px;
-            background: rgba(220, 38, 38, 0.9); border-radius: 50%; color: white;
+            background: rgba(13, 148, 136, 0.9); border-radius: 50%; color: white;
             display: flex; align-items: center; justify-content: center; font-size: 14px;
         }
 
@@ -38,6 +55,9 @@
             position: fixed; inset: 0; background: rgba(0,0,0,0.95);
             z-index: 100; display: none; align-items: center; justify-content: center;
         }
+
+        .history-prompt { cursor: pointer; transition: color 0.15s; }
+        .history-prompt:active { color: #5eead4; }
     </style>
 </head>
 <body class="p-4 flex flex-col items-center">
@@ -51,9 +71,9 @@
             </summary>
             <div class="px-4 pb-4 pt-2">
                 <input id="apiKeyInput" type="password" autocomplete="off" placeholder="Paste your Gemini API key"
-                    class="w-full bg-secondary p-3 rounded-lg border-none focus:ring-2 focus:ring-red-600 text-sm mb-2">
+                    class="w-full bg-secondary p-3 rounded-lg border-none focus:ring-2 focus:ring-teal-400 text-sm mb-2">
                 <div class="flex gap-2">
-                    <button onclick="saveKey()" class="flex-1 py-2 bg-red-accent rounded-lg text-sm font-bold active:scale-95 transition">Save</button>
+                    <button onclick="saveKey()" class="flex-1 py-2 bg-accent rounded-lg text-sm font-bold active:scale-95 transition">Save</button>
                     <button onclick="clearKey()" class="flex-1 py-2 bg-secondary rounded-lg text-sm font-bold active:scale-95 transition">Clear</button>
                 </div>
                 <p class="text-[10px] text-gray-500 mt-2">Stored only in this browser's localStorage. Get a key at aistudio.google.com.</p>
@@ -70,13 +90,13 @@
                     <button onclick="setRes('2K')" id="btn2K" class="px-4 py-1 rounded-full text-xs font-bold active-res">2K</button>
                     <button onclick="setRes('4K')" id="btn4K" class="px-4 py-1 rounded-full text-xs font-bold">4K</button>
                 </div>
-                <select id="aspectRatioSelect" class="bg-input border-none text-sm rounded-lg p-2 focus:ring-2 focus:ring-red-600">
+                <select id="aspectRatioSelect" class="bg-input border-none text-sm rounded-lg p-2 focus:ring-2 focus:ring-teal-400">
                 </select>
             </div>
         </div>
 
         <div class="mb-4 border border-gray-600 rounded-xl bg-input overflow-hidden">
-            <label class="block w-full py-4 bg-red-accent text-center font-bold cursor-pointer hover:bg-red-700 transition">
+            <label class="block w-full py-4 bg-accent text-center font-bold cursor-pointer  transition">
                 Upload Source Images
                 <input type="file" id="imageUpload" multiple accept="image/*" class="hidden">
             </label>
@@ -87,9 +107,9 @@
         <p id="previewHint" class="text-[10px] text-gray-500 mb-4 hidden">Tap preview to enlarge • Tap X to remove</p>
 
         <textarea id="prompt" rows="3" placeholder="Describe changes or new image..."
-            class="w-full bg-input p-4 rounded-xl border-none focus:ring-2 focus:ring-red-600 mb-4 resize-none"></textarea>
+            class="w-full bg-input p-4 rounded-xl border-none focus:ring-2 focus:ring-teal-400 mb-4 resize-none"></textarea>
 
-        <button id="genBtn" onclick="handleGenerate()" class="w-full py-4 bg-red-accent rounded-xl font-bold shadow-lg active:scale-95 transition mb-6">
+        <button id="genBtn" onclick="handleGenerate()" class="w-full py-4 bg-accent rounded-xl font-bold shadow-lg active:scale-95 transition mb-6">
             GENERATE
         </button>
 
@@ -106,7 +126,7 @@
             <div class="px-3 pb-3 pt-1">
                 <div id="historyGrid" class="grid grid-cols-2 sm:grid-cols-3 gap-3"></div>
                 <div class="flex justify-end mt-2">
-                    <button id="historyClearBtn" class="text-[10px] text-gray-500 hover:text-red-500 transition">Clear history</button>
+                    <button id="historyClearBtn" class="text-[10px] text-gray-500 hover:text-teal-400 transition">Clear history</button>
                 </div>
             </div>
         </details>
@@ -460,9 +480,30 @@
                         <span>${item.model} • ${item.res} • ${item.ratio}</span>
                         <span class="text-gray-500 font-normal whitespace-nowrap">${formatTime(item.timestamp)}</span>
                     </div>
-                    <div class="text-[11px] text-gray-200 leading-snug break-words"></div>
+                    <div class="history-prompt text-[11px] text-gray-200 leading-snug break-words" title="Tap to copy"></div>
                 `;
-                meta.querySelector('div:last-child').textContent = item.prompt;
+                const promptEl = meta.querySelector('.history-prompt');
+                promptEl.textContent = item.prompt;
+                promptEl.addEventListener('click', async (e) => {
+                    e.stopPropagation();
+                    const original = item.prompt;
+                    try {
+                        await navigator.clipboard.writeText(original);
+                    } catch (_) {
+                        const ta = document.createElement('textarea');
+                        ta.value = original; ta.style.position = 'fixed'; ta.style.opacity = '0';
+                        document.body.appendChild(ta); ta.select();
+                        try { document.execCommand('copy'); } catch (__) {}
+                        document.body.removeChild(ta);
+                    }
+                    const originalColor = promptEl.style.color;
+                    promptEl.textContent = '✓ Copied';
+                    promptEl.style.color = '#5eead4';
+                    setTimeout(() => {
+                        promptEl.textContent = original;
+                        promptEl.style.color = originalColor;
+                    }, 1100);
+                });
 
                 card.appendChild(imgWrap);
                 card.appendChild(meta);
