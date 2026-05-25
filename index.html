@@ -446,7 +446,8 @@
 
         const HISTORY_DB = 'nb-history';
         const HISTORY_STORE = 'images';
-        const HISTORY_MAX = 100;
+        const HISTORY_MAX_IMAGE = 100;
+        const HISTORY_MAX_VIDEO = 10;
 
         function openHistoryDb() {
             return new Promise((resolve, reject) => {
@@ -464,37 +465,31 @@
         }
 
         async function addToHistory(record) {
+            if (!record.type) record.type = 'image';
             try {
                 const db = await openHistoryDb();
                 await new Promise((resolve, reject) => {
                     const tx = db.transaction(HISTORY_STORE, 'readwrite');
-                    const store = tx.objectStore(HISTORY_STORE);
-                    store.add(record);
+                    tx.objectStore(HISTORY_STORE).add(record);
                     tx.oncomplete = resolve;
                     tx.onerror = () => reject(tx.error);
                 });
                 await new Promise((resolve) => {
                     const tx = db.transaction(HISTORY_STORE, 'readwrite');
                     const store = tx.objectStore(HISTORY_STORE);
-                    const countReq = store.count();
-                    countReq.onsuccess = () => {
-                        const excess = countReq.result - HISTORY_MAX;
-                        if (excess <= 0) { resolve(); return; }
-                        const cursorReq = store.index('timestamp').openCursor();
-                        let removed = 0;
-                        cursorReq.onsuccess = (e) => {
-                            const c = e.target.result;
-                            if (c && removed < excess) {
-                                c.delete();
-                                removed++;
-                                c.continue();
-                            } else {
-                                resolve();
-                            }
-                        };
-                        cursorReq.onerror = () => resolve();
+                    const counts = { image: 0, video: 0 };
+                    const caps = { image: HISTORY_MAX_IMAGE, video: HISTORY_MAX_VIDEO };
+                    const cursorReq = store.index('timestamp').openCursor(null, 'prev');
+                    cursorReq.onsuccess = (e) => {
+                        const c = e.target.result;
+                        if (!c) return;
+                        const t = (c.value && c.value.type) || 'image';
+                        counts[t] = (counts[t] || 0) + 1;
+                        if (counts[t] > (caps[t] || HISTORY_MAX_IMAGE)) c.delete();
+                        c.continue();
                     };
-                    countReq.onerror = () => resolve();
+                    cursorReq.onerror = () => resolve();
+                    tx.oncomplete = resolve;
                 });
                 db.close();
                 updateHistoryCount();
@@ -620,14 +615,26 @@
         async function updateHistoryCount() {
             try {
                 const db = await openHistoryDb();
-                const c = await new Promise((resolve) => {
+                const counts = await new Promise((resolve) => {
                     const tx = db.transaction(HISTORY_STORE, 'readonly');
-                    const req = tx.objectStore(HISTORY_STORE).count();
-                    req.onsuccess = () => resolve(req.result);
-                    req.onerror = () => resolve(0);
+                    const store = tx.objectStore(HISTORY_STORE);
+                    const c = { image: 0, video: 0 };
+                    const cur = store.openCursor();
+                    cur.onsuccess = (e) => {
+                        const k = e.target.result;
+                        if (!k) { resolve(c); return; }
+                        const t = (k.value && k.value.type) || 'image';
+                        c[t] = (c[t] || 0) + 1;
+                        k.continue();
+                    };
+                    cur.onerror = () => resolve(c);
                 });
                 db.close();
-                document.getElementById('historyCount').textContent = c ? `${c} / ${HISTORY_MAX}` : '';
+                const el = document.getElementById('historyCount');
+                if (!counts.image && !counts.video) el.textContent = '';
+                else if (!counts.video) el.textContent = `${counts.image} / ${HISTORY_MAX_IMAGE}`;
+                else if (!counts.image) el.textContent = `${counts.video} / ${HISTORY_MAX_VIDEO} vid`;
+                else el.textContent = `${counts.image}/${HISTORY_MAX_IMAGE} img • ${counts.video}/${HISTORY_MAX_VIDEO} vid`;
             } catch (_) {}
         }
 
@@ -857,7 +864,6 @@
                 parameters: {
                     aspectRatio: aspect,
                     durationSeconds: duration,
-                    numberOfVideos: 1,
                     personGeneration: 'allow_all'
                 }
             };
