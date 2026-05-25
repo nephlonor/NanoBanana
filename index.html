@@ -80,7 +80,14 @@
             </div>
         </details>
 
-        <div class="flex justify-between items-center gap-4 mb-6 flex-wrap">
+        <div class="flex justify-center mb-4">
+            <div class="flex bg-gray-700 p-1 rounded-full">
+                <button onclick="setMode('IMAGE')" id="btnModeImage" class="px-6 py-1 rounded-full text-xs font-bold active-res">IMAGE</button>
+                <button onclick="setMode('VIDEO')" id="btnModeVideo" class="px-6 py-1 rounded-full text-xs font-bold">VIDEO</button>
+            </div>
+        </div>
+
+        <div id="imageControls" class="flex justify-between items-center gap-4 mb-6 flex-wrap">
             <div class="flex bg-gray-700 p-1 rounded-full">
                 <button onclick="setModel('PRO')" id="btnPRO" class="px-4 py-1 rounded-full text-xs font-bold active-res">PRO</button>
                 <button onclick="setModel('FLASH')" id="btnFLASH" class="px-4 py-1 rounded-full text-xs font-bold">FLASH</button>
@@ -95,9 +102,27 @@
             </div>
         </div>
 
+        <div id="videoControls" class="hidden justify-between items-center gap-4 mb-6 flex-wrap">
+            <div class="flex bg-gray-700 p-1 rounded-full">
+                <button onclick="setVideoModel('QUALITY')" id="btnVidQ" class="px-3 py-1 rounded-full text-xs font-bold active-res">VEO 3.1</button>
+                <button onclick="setVideoModel('FAST')" id="btnVidF" class="px-3 py-1 rounded-full text-xs font-bold">3.1 FAST</button>
+            </div>
+            <div class="flex items-center gap-2">
+                <select id="videoDurationSelect" class="bg-input border-none text-sm rounded-lg p-2 focus:ring-2 focus:ring-teal-400">
+                    <option value="4">4s</option>
+                    <option value="6">6s</option>
+                    <option value="8" selected>8s</option>
+                </select>
+                <select id="videoAspectSelect" class="bg-input border-none text-sm rounded-lg p-2 focus:ring-2 focus:ring-teal-400">
+                    <option value="16:9">16:9</option>
+                    <option value="9:16">9:16</option>
+                </select>
+            </div>
+        </div>
+
         <div class="mb-4 border border-gray-600 rounded-xl bg-input overflow-hidden">
             <label class="block w-full py-4 bg-accent text-center font-bold cursor-pointer  transition">
-                Upload Source Images
+                <span id="uploadLabel">Upload Source Images</span>
                 <input type="file" id="imageUpload" multiple accept="image/*" class="hidden">
             </label>
             <p id="imageCount" class="text-xs text-gray-500 px-3 py-2 text-center">0 images uploaded. Max 20.</p>
@@ -115,6 +140,7 @@
 
         <div class="relative w-full aspect-square bg-black rounded-xl overflow-hidden border border-gray-800">
             <img id="outputImg" class="w-full h-full object-contain" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7">
+            <video id="outputVid" class="w-full h-full object-contain hidden" controls playsinline></video>
         </div>
         <p id="statusMsg" class="text-center text-xs mt-3 text-gray-500 font-medium">Ready</p>
 
@@ -132,8 +158,9 @@
         </details>
     </div>
 
-    <div id="imageModal" class="modal" onclick="this.style.display='none'">
-        <img id="modalImg" class="max-w-[95%] max-height-[90%] shadow-2xl rounded-lg">
+    <div id="imageModal" class="modal" onclick="closeEnlarge(event)">
+        <img id="modalImg" class="max-w-[95%] max-h-[90vh] shadow-2xl rounded-lg hidden">
+        <video id="modalVid" class="max-w-[95%] max-h-[90vh] shadow-2xl rounded-lg hidden" controls playsinline></video>
     </div>
 
     <script>
@@ -141,6 +168,12 @@
             PRO:   "gemini-3-pro-image-preview",
             FLASH: "gemini-3.1-flash-image-preview"
         };
+        const VIDEO_MODELS = {
+            QUALITY: "veo-3.1-generate-preview",
+            FAST:    "veo-3.1-fast-generate-preview"
+        };
+        const VIDEO_POLL_INTERVAL_MS = 5000;
+        const VIDEO_MAX_WAIT_MS = 10 * 60 * 1000;
         const RETRY_DELAY_MS = 2000;
 
         const API_SUPPORTED_RATIOS = [
@@ -160,6 +193,8 @@
         let uploadedImages = [];
         let currentRes = "2K";
         let currentModel = "PRO";
+        let currentMode = "IMAGE";
+        let currentVideoModel = "QUALITY";
         let audioCtx = null;
 
         const ratioSelect = document.getElementById('aspectRatioSelect');
@@ -296,6 +331,35 @@
             document.getElementById('btnFLASH').classList.toggle('active-res', val === 'FLASH');
         }
 
+        function setMode(val) {
+            currentMode = val;
+            document.getElementById('btnModeImage').classList.toggle('active-res', val === 'IMAGE');
+            document.getElementById('btnModeVideo').classList.toggle('active-res', val === 'VIDEO');
+            const imgCtl = document.getElementById('imageControls');
+            const vidCtl = document.getElementById('videoControls');
+            const uploadLabel = document.getElementById('uploadLabel');
+            const promptEl = document.getElementById('prompt');
+            if (val === 'VIDEO') {
+                imgCtl.classList.add('hidden');
+                vidCtl.classList.remove('hidden');
+                vidCtl.classList.add('flex');
+                uploadLabel.textContent = 'Upload Reference Image (optional)';
+                promptEl.placeholder = 'Describe the video you want to create…';
+            } else {
+                vidCtl.classList.add('hidden');
+                vidCtl.classList.remove('flex');
+                imgCtl.classList.remove('hidden');
+                uploadLabel.textContent = 'Upload Source Images';
+                promptEl.placeholder = 'Describe changes or new image...';
+            }
+        }
+
+        function setVideoModel(val) {
+            currentVideoModel = val;
+            document.getElementById('btnVidQ').classList.toggle('active-res', val === 'QUALITY');
+            document.getElementById('btnVidF').classList.toggle('active-res', val === 'FAST');
+        }
+
         function findClosestRatio(actualRatio) {
             return API_SUPPORTED_RATIOS.reduce((prev, curr) =>
                 Math.abs(curr.ratio - actualRatio) < Math.abs(prev.ratio - actualRatio) ? curr : prev
@@ -349,9 +413,35 @@
             renderPreviews();
         }
 
-        function enlarge(url) {
-            document.getElementById('modalImg').src = url;
-            document.getElementById('imageModal').style.display = 'flex';
+        function enlarge(url, kind) {
+            const modal = document.getElementById('imageModal');
+            const img = document.getElementById('modalImg');
+            const vid = document.getElementById('modalVid');
+            if (kind === 'video') {
+                img.classList.add('hidden');
+                img.removeAttribute('src');
+                vid.classList.remove('hidden');
+                vid.src = url;
+                vid.play().catch(() => {});
+            } else {
+                vid.pause();
+                vid.removeAttribute('src');
+                vid.load();
+                vid.classList.add('hidden');
+                img.classList.remove('hidden');
+                img.src = url;
+            }
+            modal.style.display = 'flex';
+        }
+
+        function closeEnlarge(e) {
+            if (e && e.target.tagName === 'VIDEO') return;
+            const modal = document.getElementById('imageModal');
+            const vid = document.getElementById('modalVid');
+            vid.pause();
+            vid.removeAttribute('src');
+            vid.load();
+            modal.style.display = 'none';
         }
 
         const HISTORY_DB = 'nb-history';
@@ -461,17 +551,33 @@
                 return;
             }
             items.forEach(item => {
+                const isVideo = item.type === 'video';
                 const card = document.createElement('div');
                 card.className = 'bg-secondary rounded-lg overflow-hidden flex flex-col';
 
                 const imgWrap = document.createElement('div');
-                imgWrap.className = 'aspect-square bg-black cursor-pointer';
-                const img = document.createElement('img');
-                img.src = item.dataUrl;
-                img.loading = 'lazy';
-                img.className = 'w-full h-full object-cover';
-                img.addEventListener('click', () => enlarge(item.dataUrl));
-                imgWrap.appendChild(img);
+                imgWrap.className = 'aspect-square bg-black cursor-pointer relative';
+                if (isVideo) {
+                    const vid = document.createElement('video');
+                    vid.src = item.dataUrl;
+                    vid.muted = true;
+                    vid.playsInline = true;
+                    vid.preload = 'metadata';
+                    vid.className = 'w-full h-full object-cover pointer-events-none';
+                    imgWrap.appendChild(vid);
+                    const badge = document.createElement('div');
+                    badge.textContent = '▶';
+                    badge.className = 'absolute inset-0 flex items-center justify-center text-white text-3xl drop-shadow-lg opacity-80 pointer-events-none';
+                    imgWrap.appendChild(badge);
+                    imgWrap.addEventListener('click', () => enlarge(item.dataUrl, 'video'));
+                } else {
+                    const img = document.createElement('img');
+                    img.src = item.dataUrl;
+                    img.loading = 'lazy';
+                    img.className = 'w-full h-full object-cover';
+                    imgWrap.appendChild(img);
+                    imgWrap.addEventListener('click', () => enlarge(item.dataUrl, 'image'));
+                }
 
                 const meta = document.createElement('div');
                 meta.className = 'p-2 text-xs flex-1 flex flex-col gap-1';
@@ -658,12 +764,146 @@
             return imagePart;
         }
 
+        async function startVideoOperation(modelId, body) {
+            const apiKey = getKey();
+            const resp = await fetch(
+                `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:predictLongRunning?key=${encodeURIComponent(apiKey)}`,
+                {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                }
+            );
+            if (!resp.ok) {
+                let msg = `HTTP ${resp.status}`;
+                try { const e = await resp.json(); if (e.error && e.error.message) msg = e.error.message; } catch (_) {}
+                throw new Error(msg);
+            }
+            const data = await resp.json();
+            if (!data.name) throw new Error('Video API returned no operation name');
+            return data.name;
+        }
+
+        async function pollVideoOperation(opName, statusEl, startMs) {
+            const apiKey = getKey();
+            while (true) {
+                if (Date.now() - startMs > VIDEO_MAX_WAIT_MS) {
+                    throw new Error(`Timed out after ${Math.round(VIDEO_MAX_WAIT_MS/60000)} min`);
+                }
+                await sleep(VIDEO_POLL_INTERVAL_MS);
+                const elapsed = Math.floor((Date.now() - startMs) / 1000);
+                statusEl.textContent = `Rendering video… ${elapsed}s (safe to background)`;
+                const resp = await fetch(
+                    `https://generativelanguage.googleapis.com/v1beta/${opName}?key=${encodeURIComponent(apiKey)}`
+                );
+                if (!resp.ok) {
+                    let msg = `HTTP ${resp.status}`;
+                    try { const e = await resp.json(); if (e.error && e.error.message) msg = e.error.message; } catch (_) {}
+                    throw new Error(msg);
+                }
+                const data = await resp.json();
+                if (data.done) {
+                    if (data.error) throw new Error(data.error.message || 'Operation failed');
+                    return data.response;
+                }
+            }
+        }
+
+        function extractVideoUri(response) {
+            if (!response) return null;
+            const candidates = [
+                response.generateVideoResponse && response.generateVideoResponse.generatedSamples,
+                response.generatedSamples,
+                response.videos,
+                response.generated_videos
+            ].find(Array.isArray) || [];
+            for (const s of candidates) {
+                if (s && s.video && s.video.uri) return s.video.uri;
+                if (s && s.uri) return s.uri;
+            }
+            return null;
+        }
+
+        async function fetchVideoAsDataUrl(uri) {
+            const apiKey = getKey();
+            const sep = uri.includes('?') ? '&' : '?';
+            const resp = await fetch(`${uri}${sep}key=${encodeURIComponent(apiKey)}`);
+            if (!resp.ok) throw new Error(`Video download HTTP ${resp.status}`);
+            const blob = await resp.blob();
+            return new Promise((resolve, reject) => {
+                const r = new FileReader();
+                r.onload = () => resolve(r.result);
+                r.onerror = () => reject(new Error('Failed to read video blob'));
+                r.readAsDataURL(blob);
+            });
+        }
+
+        async function handleVideoGenerate(prompt, status, genBtn) {
+            const modelLabel = currentVideoModel === 'FAST' ? 'Veo 3.1 Fast' : 'Veo 3.1';
+            const modelId = VIDEO_MODELS[currentVideoModel];
+            const aspect = document.getElementById('videoAspectSelect').value;
+            const duration = parseInt(document.getElementById('videoDurationSelect').value, 10);
+
+            const instance = { prompt };
+            if (uploadedImages.length > 0) {
+                instance.image = {
+                    bytesBase64Encoded: uploadedImages[0].data,
+                    mimeType: uploadedImages[0].mime
+                };
+            }
+
+            const body = {
+                instances: [instance],
+                parameters: {
+                    aspectRatio: aspect,
+                    durationSeconds: duration,
+                    numberOfVideos: 1,
+                    personGeneration: 'allow_all'
+                }
+            };
+
+            status.textContent = `Starting ${modelLabel}…`;
+            const opName = await startVideoOperation(modelId, body);
+
+            const startMs = Date.now();
+            const response = await pollVideoOperation(opName, status, startMs);
+
+            const uri = extractVideoUri(response);
+            if (!uri) {
+                console.error('No video URI in response:', response);
+                throw new Error('No video URI in response');
+            }
+
+            status.textContent = 'Downloading video…';
+            const dataUrl = await fetchVideoAsDataUrl(uri);
+
+            const outImg = document.getElementById('outputImg');
+            const outVid = document.getElementById('outputVid');
+            outImg.classList.add('hidden');
+            outVid.classList.remove('hidden');
+            outVid.src = dataUrl;
+            outVid.play().catch(() => {});
+
+            addToHistory({
+                type: 'video',
+                dataUrl,
+                prompt,
+                model: modelLabel,
+                res: `${duration}s`,
+                ratio: aspect,
+                timestamp: Date.now()
+            });
+
+            finish(false);
+        }
+
         async function handleGenerate() {
             unlockAudio();
             const prompt = document.getElementById('prompt').value;
             const genBtn = document.getElementById('genBtn');
             const status = document.getElementById('statusMsg');
             const outImg = document.getElementById('outputImg');
+            const outVid = document.getElementById('outputVid');
 
             if (!getKey()) {
                 playRisingBing(true);
@@ -679,8 +919,21 @@
             genBtn.classList.add('loading-btn');
             genBtn.textContent = "PROCESSING...";
             status.style.color = "#a0a0a0";
-            status.textContent = `Crafting your image with ${currentModel}… (safe to background)`;
             startKeepAlive();
+
+            if (currentMode === 'VIDEO') {
+                try {
+                    await handleVideoGenerate(prompt, status, genBtn);
+                } catch (err) {
+                    console.error('Video generation failed:', err);
+                    finish(true, err.message);
+                }
+                return;
+            }
+
+            status.textContent = `Crafting your image with ${currentModel}… (safe to background)`;
+            outVid.classList.add('hidden');
+            outImg.classList.remove('hidden');
 
             const parts = uploadedImages.map(img => ({ inlineData: { mimeType: img.mime, data: img.data } }));
             parts.push({ text: prompt });
@@ -707,6 +960,7 @@
             const newUrl = `data:${mime};base64,${b64}`;
 
             addToHistory({
+                type: 'image',
                 dataUrl: newUrl,
                 prompt: prompt,
                 model: usedModel,
