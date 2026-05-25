@@ -445,41 +445,43 @@
             modal.style.display = 'none';
         }
 
-        async function saveVideo() {
-            const outVid = document.getElementById('outputVid');
-            const src = outVid.getAttribute('src');
+        async function saveVideo(srcArg, btnEl) {
+            const src = srcArg || document.getElementById('outputVid').getAttribute('src');
             if (!src) return;
-            const btn = document.getElementById('downloadBtn');
-            const original = btn.textContent;
-            btn.disabled = true;
-            btn.textContent = 'Preparing…';
+            const btn = btnEl || document.getElementById('downloadBtn');
+            const orig = btn ? btn.textContent : null;
+            if (btn) { btn.disabled = true; btn.textContent = 'Preparing…'; }
             try {
                 const resp = await fetch(src);
                 const blob = await resp.blob();
-                const mime = blob.type || 'video/mp4';
-                const ext = mime.includes('mp4') ? 'mp4' : (mime.split('/')[1] || 'mp4');
-                const filename = `nanobanana-${Date.now()}.${ext}`;
-                const file = new File([blob], filename, { type: mime });
+                const filename = `nanobanana-${Date.now()}.mp4`;
+                const file = new File([blob], filename, { type: 'video/mp4' });
 
-                if (navigator.canShare && navigator.canShare({ files: [file] })) {
-                    await navigator.share({ files: [file], title: filename });
-                } else {
-                    const url = URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = url;
-                    a.download = filename;
-                    document.body.appendChild(a);
-                    a.click();
-                    document.body.removeChild(a);
-                    setTimeout(() => URL.revokeObjectURL(url), 1000);
+                if (navigator.share) {
+                    try {
+                        await navigator.share({ files: [file], title: filename });
+                        return;
+                    } catch (err) {
+                        if (err && err.name === 'AbortError') return;
+                        console.warn('share() failed, falling back to download:', err);
+                    }
                 }
+
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = filename;
+                a.style.display = 'none';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                setTimeout(() => URL.revokeObjectURL(url), 30000);
             } catch (e) {
                 if (e && e.name === 'AbortError') return;
                 console.error('Save failed:', e);
-                alert('Save failed: ' + (e.message || e));
+                alert(`Save failed: ${e.message || e}`);
             } finally {
-                btn.disabled = false;
-                btn.textContent = original;
+                if (btn && orig !== null) { btn.disabled = false; btn.textContent = orig; }
             }
         }
 
@@ -644,6 +646,17 @@
                         promptEl.style.color = originalColor;
                     }, 1100);
                 });
+
+                if (isVideo) {
+                    const saveBtn = document.createElement('button');
+                    saveBtn.textContent = '⬇ Save to Photos';
+                    saveBtn.className = 'mt-1 self-start text-[10px] text-gray-400 hover:text-teal-400 transition active:scale-95';
+                    saveBtn.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        saveVideo(item.dataUrl, saveBtn);
+                    });
+                    meta.appendChild(saveBtn);
+                }
 
                 card.appendChild(imgWrap);
                 card.appendChild(meta);
