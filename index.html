@@ -143,6 +143,7 @@
             <video id="outputVid" class="w-full h-full object-contain hidden" controls playsinline></video>
         </div>
         <p id="statusMsg" class="text-center text-xs mt-3 text-gray-500 font-medium">Ready</p>
+        <button id="downloadBtn" onclick="saveVideo()" class="hidden mt-3 w-full py-2 bg-accent rounded-lg text-sm font-bold active:scale-95 transition">⬇  Save to Photos</button>
 
         <details id="historyDetails" class="mt-4 bg-input rounded-xl border border-gray-700">
             <summary class="px-4 py-3 cursor-pointer text-sm font-semibold select-none flex justify-between items-center">
@@ -442,6 +443,44 @@
             vid.removeAttribute('src');
             vid.load();
             modal.style.display = 'none';
+        }
+
+        async function saveVideo() {
+            const outVid = document.getElementById('outputVid');
+            const src = outVid.getAttribute('src');
+            if (!src) return;
+            const btn = document.getElementById('downloadBtn');
+            const original = btn.textContent;
+            btn.disabled = true;
+            btn.textContent = 'Preparing…';
+            try {
+                const resp = await fetch(src);
+                const blob = await resp.blob();
+                const mime = blob.type || 'video/mp4';
+                const ext = mime.includes('mp4') ? 'mp4' : (mime.split('/')[1] || 'mp4');
+                const filename = `nanobanana-${Date.now()}.${ext}`;
+                const file = new File([blob], filename, { type: mime });
+
+                if (navigator.canShare && navigator.canShare({ files: [file] })) {
+                    await navigator.share({ files: [file], title: filename });
+                } else {
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = filename;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    setTimeout(() => URL.revokeObjectURL(url), 1000);
+                }
+            } catch (e) {
+                if (e && e.name === 'AbortError') return;
+                console.error('Save failed:', e);
+                alert('Save failed: ' + (e.message || e));
+            } finally {
+                btn.disabled = false;
+                btn.textContent = original;
+            }
         }
 
         const HISTORY_DB = 'nb-history';
@@ -889,6 +928,7 @@
             outVid.classList.remove('hidden');
             outVid.src = dataUrl;
             outVid.play().catch(() => {});
+            document.getElementById('downloadBtn').classList.remove('hidden');
 
             addToHistory({
                 type: 'video',
@@ -925,6 +965,7 @@
             genBtn.classList.add('loading-btn');
             genBtn.textContent = "PROCESSING...";
             status.style.color = "#a0a0a0";
+            document.getElementById('downloadBtn').classList.add('hidden');
             startKeepAlive();
 
             if (currentMode === 'VIDEO') {
@@ -938,6 +979,7 @@
             }
 
             status.textContent = `Crafting your image with ${currentModel}… (safe to background)`;
+            outVid.pause();
             outVid.classList.add('hidden');
             outImg.classList.remove('hidden');
 
