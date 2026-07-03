@@ -70,13 +70,24 @@
                 <span id="keyStatus">API Key: not set</span>
             </summary>
             <div class="px-4 pb-4 pt-2">
-                <input id="apiKeyInput" type="password" autocomplete="off" placeholder="Paste your Gemini API key"
+                <input id="apiKeyInput" type="password" autocomplete="off" placeholder="Paste your Vertex AI / Gemini API key"
                     class="w-full bg-secondary p-3 rounded-lg border-none focus:ring-2 focus:ring-teal-400 text-sm mb-2">
-                <div class="flex gap-2">
+                <label class="block text-[10px] text-gray-400 mt-2 mb-1">Vertex AI region</label>
+                <select id="regionSelect" class="w-full bg-secondary p-2 rounded-lg border-none focus:ring-2 focus:ring-teal-400 text-sm mb-2">
+                    <option value="us-central1">us-central1 (Iowa)</option>
+                    <option value="us-east4">us-east4 (Virginia)</option>
+                    <option value="us-west1">us-west1 (Oregon)</option>
+                    <option value="europe-west1">europe-west1 (Belgium)</option>
+                    <option value="europe-west4">europe-west4 (Netherlands)</option>
+                    <option value="europe-west6">europe-west6 (Zurich)</option>
+                    <option value="asia-southeast1">asia-southeast1 (Singapore)</option>
+                    <option value="asia-northeast1">asia-northeast1 (Tokyo)</option>
+                </select>
+                <div class="flex gap-2 mt-2">
                     <button onclick="saveKey()" class="flex-1 py-2 bg-accent rounded-lg text-sm font-bold active:scale-95 transition">Save</button>
                     <button onclick="clearKey()" class="flex-1 py-2 bg-secondary rounded-lg text-sm font-bold active:scale-95 transition">Clear</button>
                 </div>
-                <p class="text-[10px] text-gray-500 mt-2">Stored only in this browser's localStorage. Get a key at aistudio.google.com.</p>
+                <p class="text-[10px] text-gray-500 mt-2">Vertex AI project <span class="text-gray-300 font-mono">fhnw-gemini</span>. Key stored only in this browser. Preview models may only exist in some regions — us-central1 is widest.</p>
             </div>
         </details>
 
@@ -191,6 +202,10 @@
         ];
 
         const KEY_STORAGE = 'nanobanana_api_key';
+        const REGION_STORAGE = 'nanobanana_region';
+        const VERTEX_PROJECT = 'fhnw-gemini';
+        const DEFAULT_REGION = 'us-central1';
+
         let uploadedImages = [];
         let currentRes = "2K";
         let currentModel = "PRO";
@@ -206,14 +221,31 @@
         });
 
         function getKey() { return localStorage.getItem(KEY_STORAGE) || ''; }
+        function getRegion() { return localStorage.getItem(REGION_STORAGE) || DEFAULT_REGION; }
+
+        function vertexEndpoint(modelId, verb) {
+            const region = getRegion();
+            return `https://${region}-aiplatform.googleapis.com/v1/projects/${VERTEX_PROJECT}/locations/${region}/publishers/google/models/${encodeURIComponent(modelId)}:${verb}`;
+        }
+        function vertexOperationUrl(opName) {
+            const region = getRegion();
+            return `https://${region}-aiplatform.googleapis.com/v1/${opName}`;
+        }
+        function withKey(url) {
+            const sep = url.includes('?') ? '&' : '?';
+            return `${url}${sep}key=${encodeURIComponent(getKey())}`;
+        }
 
         function updateKeyStatus() {
             const k = getKey();
+            const region = getRegion();
             const status = document.getElementById('keyStatus');
             const details = document.getElementById('keyDetails');
             const container = details.parentElement;
+            const regionSel = document.getElementById('regionSelect');
+            if (regionSel) regionSel.value = region;
             if (k) {
-                status.textContent = `API Key: set (…${k.slice(-4)})`;
+                status.textContent = `API Key: set (…${k.slice(-4)}) · ${region}`;
                 details.open = false;
                 details.classList.add('mt-2');
                 details.classList.remove('mb-4');
@@ -229,16 +261,25 @@
 
         function saveKey() {
             const v = document.getElementById('apiKeyInput').value.trim();
-            if (!v) return;
-            localStorage.setItem(KEY_STORAGE, v);
-            document.getElementById('apiKeyInput').value = '';
+            const region = document.getElementById('regionSelect').value || DEFAULT_REGION;
+            localStorage.setItem(REGION_STORAGE, region);
+            if (v) {
+                localStorage.setItem(KEY_STORAGE, v);
+                document.getElementById('apiKeyInput').value = '';
+            }
             updateKeyStatus();
         }
 
         function clearKey() {
             localStorage.removeItem(KEY_STORAGE);
+            localStorage.removeItem(REGION_STORAGE);
             updateKeyStatus();
         }
+
+        document.getElementById('regionSelect').addEventListener('change', (e) => {
+            localStorage.setItem(REGION_STORAGE, e.target.value);
+            updateKeyStatus();
+        });
 
         updateKeyStatus();
 
@@ -775,8 +816,8 @@
         }
 
         async function callApi(modelKey, body) {
-            const apiKey = getKey();
             const modelId = MODELS[modelKey];
+            const url = withKey(vertexEndpoint(modelId, 'generateContent'));
             const controller = await ensureServiceWorker();
             if (controller) {
                 const id = (crypto.randomUUID && crypto.randomUUID()) || `${Date.now()}-${Math.random()}`;
@@ -784,17 +825,14 @@
                 const promise = new Promise((resolve, reject) => {
                     pendingResolvers.set(id, { resolve, reject });
                 });
-                controller.postMessage({ type: 'generate', id, modelId, apiKey, body });
+                controller.postMessage({ type: 'generate', id, url, body });
                 return promise;
             }
-            const response = await fetch(
-                `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${encodeURIComponent(apiKey)}`,
-                {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(body)
-                }
-            );
+            const response = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+            });
             if (!response.ok) {
                 let errMsg = `HTTP ${response.status}`;
                 try {
@@ -824,15 +862,11 @@
         }
 
         async function startVideoOperation(modelId, body) {
-            const apiKey = getKey();
-            const resp = await fetch(
-                `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:predictLongRunning?key=${encodeURIComponent(apiKey)}`,
-                {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(body)
-                }
-            );
+            const resp = await fetch(withKey(vertexEndpoint(modelId, 'predictLongRunning')), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+            });
             if (!resp.ok) {
                 let msg = `HTTP ${resp.status}`;
                 try { const e = await resp.json(); if (e.error && e.error.message) msg = e.error.message; } catch (_) {}
@@ -844,7 +878,6 @@
         }
 
         async function pollVideoOperation(opName, statusEl, startMs) {
-            const apiKey = getKey();
             while (true) {
                 if (Date.now() - startMs > VIDEO_MAX_WAIT_MS) {
                     throw new Error(`Timed out after ${Math.round(VIDEO_MAX_WAIT_MS/60000)} min`);
@@ -852,9 +885,7 @@
                 await sleep(VIDEO_POLL_INTERVAL_MS);
                 const elapsed = Math.floor((Date.now() - startMs) / 1000);
                 statusEl.textContent = `Rendering video… ${elapsed}s (safe to background)`;
-                const resp = await fetch(
-                    `https://generativelanguage.googleapis.com/v1beta/${opName}?key=${encodeURIComponent(apiKey)}`
-                );
+                const resp = await fetch(withKey(vertexOperationUrl(opName)));
                 if (!resp.ok) {
                     let msg = `HTTP ${resp.status}`;
                     try { const e = await resp.json(); if (e.error && e.error.message) msg = e.error.message; } catch (_) {}
@@ -868,25 +899,32 @@
             }
         }
 
-        function extractVideoUri(response) {
+        function extractVideoResult(response) {
             if (!response) return null;
             const candidates = [
                 response.generateVideoResponse && response.generateVideoResponse.generatedSamples,
                 response.generatedSamples,
                 response.videos,
-                response.generated_videos
+                response.generated_videos,
+                response.predictions
             ].find(Array.isArray) || [];
             for (const s of candidates) {
-                if (s && s.video && s.video.uri) return s.video.uri;
-                if (s && s.uri) return s.uri;
+                if (!s) continue;
+                if (s.bytesBase64Encoded) return { base64: s.bytesBase64Encoded, mime: s.mimeType || 'video/mp4' };
+                if (s.video && s.video.bytesBase64Encoded) return { base64: s.video.bytesBase64Encoded, mime: s.video.mimeType || 'video/mp4' };
+                if (s.video && s.video.uri) return { uri: s.video.uri };
+                if (s.uri) return { uri: s.uri };
+                if (s.videoUri) return { uri: s.videoUri };
+                if (s.gcsUri) return { uri: s.gcsUri };
             }
             return null;
         }
 
         async function fetchVideoAsDataUrl(uri) {
-            const apiKey = getKey();
-            const sep = uri.includes('?') ? '&' : '?';
-            const resp = await fetch(`${uri}${sep}key=${encodeURIComponent(apiKey)}`);
+            const url = uri.startsWith('gs://')
+                ? withKey(`https://storage.googleapis.com/${uri.slice(5)}`)
+                : withKey(uri);
+            const resp = await fetch(url);
             if (!resp.ok) throw new Error(`Video download HTTP ${resp.status}`);
             const blob = await resp.blob();
             return new Promise((resolve, reject) => {
@@ -926,14 +964,19 @@
             const startMs = Date.now();
             const response = await pollVideoOperation(opName, status, startMs);
 
-            const uri = extractVideoUri(response);
-            if (!uri) {
-                console.error('No video URI in response:', response);
-                throw new Error('No video URI in response');
+            const result = extractVideoResult(response);
+            if (!result) {
+                console.error('No video in response:', response);
+                throw new Error('No video in response');
             }
 
-            status.textContent = 'Downloading video…';
-            const dataUrl = await fetchVideoAsDataUrl(uri);
+            let dataUrl;
+            if (result.base64) {
+                dataUrl = `data:${result.mime};base64,${result.base64}`;
+            } else {
+                status.textContent = 'Downloading video…';
+                dataUrl = await fetchVideoAsDataUrl(result.uri);
+            }
 
             const outImg = document.getElementById('outputImg');
             const outVid = document.getElementById('outputVid');

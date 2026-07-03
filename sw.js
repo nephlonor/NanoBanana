@@ -27,17 +27,14 @@ async function deleteResult(id) {
     await cache.delete(`/__nb_result/${id}`);
 }
 
-async function runGenerate({ id, modelId, apiKey, body }) {
+async function runGenerate({ id, url, body }) {
     let result;
     try {
-        const response = await fetch(
-            `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${encodeURIComponent(apiKey)}`,
-            {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(body)
-            }
-        );
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        });
         let data = null;
         try { data = await response.json(); } catch (_) {}
         if (!response.ok) {
