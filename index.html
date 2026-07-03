@@ -225,11 +225,10 @@
 
         function vertexEndpoint(modelId, verb) {
             const region = getRegion();
-            return `https://${region}-aiplatform.googleapis.com/v1/projects/${VERTEX_PROJECT}/locations/${region}/publishers/google/models/${encodeURIComponent(modelId)}:${verb}`;
+            return `https://aiplatform.googleapis.com/v1/projects/${VERTEX_PROJECT}/locations/${region}/publishers/google/models/${encodeURIComponent(modelId)}:${verb}`;
         }
         function vertexOperationUrl(opName) {
-            const region = getRegion();
-            return `https://${region}-aiplatform.googleapis.com/v1/${opName}`;
+            return `https://aiplatform.googleapis.com/v1/${opName}`;
         }
         function withKey(url) {
             const sep = url.includes('?') ? '&' : '?';
