@@ -322,14 +322,19 @@
         const DEFAULT_CREDIT_USED = 1;
         const DEFAULT_CREDIT_EXPIRY = '2026-10-02';
 
+        // CHF prices = official Google USD price x 0.807 (the rate Google
+        // applied to the free trial: USD 300 -> CHF 242).
+        //   PRO (gemini-3-pro-image):   2K $0.134, 4K $0.24  (img output $120/M tok)
+        //   FLASH (gemini-3.1-flash):   2K ~$0.067, 4K ~$0.12 (img output $60/M tok)
+        //   Veo 3.1 standard: $0.40/s   Veo 3.1 fast: $0.15/s
         const PRICING = {
             image: {
-                PRO:   { '2K': 0.11, '4K': 0.22 },
-                FLASH: { '2K': 0.04, '4K': 0.08 }
+                PRO:   { '2K': 0.11, '4K': 0.19 },
+                FLASH: { '2K': 0.05, '4K': 0.10 }
             },
             video: {
-                QUALITY: 0.75,
-                FAST:    0.40
+                QUALITY: 0.32,
+                FAST:    0.12
             }
         };
 
