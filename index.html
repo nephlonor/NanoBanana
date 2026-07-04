@@ -58,12 +58,29 @@
 
         .history-prompt { cursor: pointer; transition: color 0.15s; }
         .history-prompt:active { color: #5eead4; }
+
+        .credit-bar-normal { background-image: linear-gradient(135deg, #14b8a6 0%, #10b981 100%); }
+        .credit-bar-warn   { background-image: linear-gradient(135deg, #f59e0b 0%, #d97706 100%); }
+        .credit-bar-danger { background-image: linear-gradient(135deg, #ef4444 0%, #b91c1c 100%); }
     </style>
 </head>
 <body class="p-4 flex flex-col items-center">
 
     <div class="w-full max-w-2xl bg-container p-6 md:p-8 rounded-2xl shadow-2xl">
-        <h1 class="text-3xl font-bold text-center mb-6">Nano-Banana-Pro</h1>
+        <h1 class="text-3xl font-bold text-center mb-2">Nano-Banana-Pro</h1>
+
+        <div id="creditPanel" class="mb-4 bg-input rounded-xl border border-gray-700 px-4 py-3">
+            <div class="flex justify-between items-center gap-2 mb-2">
+                <div class="text-xs font-semibold">
+                    <span class="text-gray-100"><span id="creditUsed">CHF 1.00</span> / <span id="creditTotal">CHF 242.00</span></span>
+                    <span class="text-gray-500 text-[10px] ml-2" id="creditDaysLeft"></span>
+                </div>
+                <button onclick="openEditCredits()" class="text-[10px] text-gray-400 hover:text-teal-400 transition">✎ Edit</button>
+            </div>
+            <div class="h-1.5 bg-gray-700 rounded-full overflow-hidden">
+                <div id="creditBar" class="h-full transition-all credit-bar-normal" style="width: 0%"></div>
+            </div>
+        </div>
 
         <details id="keyDetails" class="mb-4 bg-input rounded-xl border border-gray-700">
             <summary class="px-4 py-3 cursor-pointer text-sm font-semibold select-none">
@@ -168,6 +185,22 @@
                 </div>
             </div>
         </details>
+    </div>
+
+    <div id="creditsEditModal" class="modal" onclick="if(event.target===this)closeEditCredits()">
+        <div class="bg-container rounded-2xl p-6 max-w-sm w-[90%] border border-gray-700 shadow-2xl">
+            <h3 class="text-lg font-bold mb-4">Edit Credits</h3>
+            <label class="block text-[10px] text-gray-400 mb-1">Total (CHF)</label>
+            <input id="editTotal" type="number" step="0.01" min="0" class="w-full bg-secondary p-2 rounded-lg border-none text-sm mb-3 focus:ring-2 focus:ring-teal-400">
+            <label class="block text-[10px] text-gray-400 mb-1">Used (CHF)</label>
+            <input id="editUsed" type="number" step="0.01" min="0" class="w-full bg-secondary p-2 rounded-lg border-none text-sm mb-3 focus:ring-2 focus:ring-teal-400">
+            <label class="block text-[10px] text-gray-400 mb-1">Expiry date</label>
+            <input id="editExpiry" type="date" class="w-full bg-secondary p-2 rounded-lg border-none text-sm mb-4 focus:ring-2 focus:ring-teal-400">
+            <div class="flex gap-2">
+                <button onclick="saveCredits()" class="flex-1 py-2 bg-accent rounded-lg text-sm font-bold active:scale-95 transition">Save</button>
+                <button onclick="closeEditCredits()" class="flex-1 py-2 bg-secondary rounded-lg text-sm font-bold active:scale-95 transition">Cancel</button>
+            </div>
+        </div>
     </div>
 
     <div id="imageModal" class="modal" onclick="closeEnlarge(event)">
@@ -281,6 +314,100 @@
         });
 
         updateKeyStatus();
+
+        const CREDIT_TOTAL_KEY = 'nb_credit_total';
+        const CREDIT_USED_KEY = 'nb_credit_used';
+        const CREDIT_EXPIRY_KEY = 'nb_credit_expiry';
+        const DEFAULT_CREDIT_TOTAL = 242;
+        const DEFAULT_CREDIT_USED = 1;
+        const DEFAULT_CREDIT_EXPIRY = '2026-10-02';
+
+        const PRICING = {
+            image: {
+                PRO:   { '2K': 0.11, '4K': 0.22 },
+                FLASH: { '2K': 0.04, '4K': 0.08 }
+            },
+            video: {
+                QUALITY: 0.75,
+                FAST:    0.40
+            }
+        };
+
+        function getCreditTotal() {
+            const v = parseFloat(localStorage.getItem(CREDIT_TOTAL_KEY));
+            return Number.isFinite(v) ? v : DEFAULT_CREDIT_TOTAL;
+        }
+        function getCreditUsed() {
+            const v = parseFloat(localStorage.getItem(CREDIT_USED_KEY));
+            return Number.isFinite(v) ? v : DEFAULT_CREDIT_USED;
+        }
+        function getCreditExpiry() {
+            return localStorage.getItem(CREDIT_EXPIRY_KEY) || DEFAULT_CREDIT_EXPIRY;
+        }
+        function setCreditUsed(v) {
+            localStorage.setItem(CREDIT_USED_KEY, Math.max(0, v).toFixed(2));
+            updateCreditDisplay();
+        }
+        function addCreditUsage(amount) {
+            if (!amount || amount <= 0) return;
+            setCreditUsed(getCreditUsed() + amount);
+        }
+        function priceForImage(model, res) {
+            return (PRICING.image[model] && PRICING.image[model][res]) || 0;
+        }
+        function priceForVideo(model, seconds) {
+            return (PRICING.video[model] || 0) * (seconds || 0);
+        }
+        function daysUntil(dateStr) {
+            const d = new Date(dateStr + 'T00:00:00');
+            const now = new Date();
+            const diff = d.getTime() - now.getTime();
+            return Math.ceil(diff / (1000 * 60 * 60 * 24));
+        }
+
+        function updateCreditDisplay() {
+            const total = getCreditTotal();
+            const used = getCreditUsed();
+            const pct = total > 0 ? (used / total) * 100 : 0;
+            const days = daysUntil(getCreditExpiry());
+
+            document.getElementById('creditUsed').textContent = `CHF ${used.toFixed(2)}`;
+            document.getElementById('creditTotal').textContent = `CHF ${total.toFixed(2)}`;
+            const daysEl = document.getElementById('creditDaysLeft');
+            if (days > 1) daysEl.textContent = `· ${days} days left`;
+            else if (days === 1) daysEl.textContent = '· 1 day left';
+            else if (days === 0) daysEl.textContent = '· expires today';
+            else daysEl.textContent = '· expired';
+
+            const bar = document.getElementById('creditBar');
+            bar.style.width = `${Math.min(100, Math.max(0, pct)).toFixed(1)}%`;
+            bar.classList.remove('credit-bar-normal', 'credit-bar-warn', 'credit-bar-danger');
+            if (pct >= 95 || days <= 0) bar.classList.add('credit-bar-danger');
+            else if (pct >= 80 || days <= 7) bar.classList.add('credit-bar-warn');
+            else bar.classList.add('credit-bar-normal');
+        }
+
+        function openEditCredits() {
+            document.getElementById('editTotal').value = getCreditTotal();
+            document.getElementById('editUsed').value = getCreditUsed();
+            document.getElementById('editExpiry').value = getCreditExpiry();
+            document.getElementById('creditsEditModal').style.display = 'flex';
+        }
+        function closeEditCredits() {
+            document.getElementById('creditsEditModal').style.display = 'none';
+        }
+        function saveCredits() {
+            const t = parseFloat(document.getElementById('editTotal').value);
+            const u = parseFloat(document.getElementById('editUsed').value);
+            const e = document.getElementById('editExpiry').value;
+            if (Number.isFinite(t) && t >= 0) localStorage.setItem(CREDIT_TOTAL_KEY, t.toFixed(2));
+            if (Number.isFinite(u) && u >= 0) localStorage.setItem(CREDIT_USED_KEY, u.toFixed(2));
+            if (e) localStorage.setItem(CREDIT_EXPIRY_KEY, e);
+            updateCreditDisplay();
+            closeEditCredits();
+        }
+
+        updateCreditDisplay();
 
         function unlockAudio() {
             if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -985,6 +1112,8 @@
             outVid.play().catch(() => {});
             document.getElementById('downloadBtn').classList.remove('hidden');
 
+            addCreditUsage(priceForVideo(currentVideoModel, duration));
+
             addToHistory({
                 type: 'video',
                 dataUrl,
@@ -1061,6 +1190,8 @@
             const b64 = imagePart.inlineData.data;
             const mime = imagePart.inlineData.mimeType || 'image/png';
             const newUrl = `data:${mime};base64,${b64}`;
+
+            addCreditUsage(priceForImage(usedModel, currentRes));
 
             addToHistory({
                 type: 'image',
