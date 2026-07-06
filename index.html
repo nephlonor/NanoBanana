@@ -194,7 +194,8 @@
             </summary>
             <div class="px-3 pb-3 pt-1">
                 <div id="historyGrid" class="grid grid-cols-2 sm:grid-cols-3 gap-3"></div>
-                <div class="flex justify-end mt-2">
+                <div class="flex justify-between items-center mt-2">
+                    <button id="historyRetrieveBtn" class="text-[10px] text-gray-500 hover:text-teal-400 transition">↻ Retrieve lost files</button>
                     <button id="historyClearBtn" class="text-[10px] text-gray-500 hover:text-teal-400 transition">Clear history</button>
                 </div>
             </div>
@@ -1077,6 +1078,16 @@
             await renderHistory();
             updateHistoryCount();
         });
+        document.getElementById('historyRetrieveBtn').addEventListener('click', async (e) => {
+            e.preventDefault();
+            const btn = e.currentTarget;
+            const orig = btn.textContent;
+            btn.textContent = 'Checking…';
+            const n = await syncFromServiceWorker();
+            await renderHistory();
+            btn.textContent = n > 0 ? `Recovered ${n}` : 'None found';
+            setTimeout(() => { btn.textContent = orig; }, 1800);
+        });
         updateHistoryCount();
 
         function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
@@ -1111,19 +1122,30 @@
             return swReadyPromise;
         }
 
+        const RESULT_CACHE_NAME = 'nb-results-v1';
+        const consumedResultIds = new Set();
+
         if ('serviceWorker' in navigator) {
             navigator.serviceWorker.addEventListener('message', (e) => {
                 const msg = e.data;
                 if (!msg || msg.type !== 'result') return;
                 const r = pendingResolvers.get(msg.id);
-                if (!r) return;
-                pendingResolvers.delete(msg.id);
-                if (sessionStorage.getItem(PENDING_KEY) === msg.id) {
-                    sessionStorage.removeItem(PENDING_KEY);
+                if (r) {
+                    pendingResolvers.delete(msg.id);
+                    consumedResultIds.add(msg.id);
+                    if (sessionStorage.getItem(PENDING_KEY) === msg.id) {
+                        sessionStorage.removeItem(PENDING_KEY);
+                    }
+                    navigator.serviceWorker.controller && navigator.serviceWorker.controller.postMessage({ type: 'ack', id: msg.id });
+                    if (msg.ok) r.resolve(msg.data);
+                    else r.reject(new Error(msg.error || 'Generation failed'));
+                    return;
                 }
-                navigator.serviceWorker.controller && navigator.serviceWorker.controller.postMessage({ type: 'ack', id: msg.id });
-                if (msg.ok) r.resolve(msg.data);
-                else r.reject(new Error(msg.error || 'Generation failed'));
+                // No awaiting generation (e.g. the page was reloaded) — a
+                // successful result is a lost file; fold it into history.
+                if (msg.ok && msg.data) {
+                    recoverResult(msg.id, msg.data, msg.meta).then((ok) => { if (ok) refreshHistoryUI(); });
+                }
             });
         }
 
@@ -1133,9 +1155,76 @@
             if (pendingId && pendingResolvers.has(pendingId) && navigator.serviceWorker.controller) {
                 navigator.serviceWorker.controller.postMessage({ type: 'check', id: pendingId });
             }
+            syncFromServiceWorker();
         });
 
-        ensureServiceWorker();
+        function refreshHistoryUI() {
+            updateHistoryCount();
+            const hd = document.getElementById('historyDetails');
+            if (hd && hd.open) renderHistory();
+        }
+
+        function extractMediaFromResult(data) {
+            if (!data) return null;
+            const vid = findVideoInObject(data);
+            if (vid && vid.base64) return { type: 'video', dataUrl: `data:${vid.mime};base64,${vid.base64}` };
+            const parts = data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts;
+            const imgPart = parts && parts.find((p) => p.inlineData && p.inlineData.data);
+            if (imgPart) return { type: 'image', dataUrl: `data:${imgPart.inlineData.mimeType || 'image/png'};base64,${imgPart.inlineData.data}` };
+            return null;
+        }
+
+        async function ackAndDelete(id) {
+            try {
+                if (navigator.serviceWorker.controller) navigator.serviceWorker.controller.postMessage({ type: 'ack', id });
+                const cache = await caches.open(RESULT_CACHE_NAME);
+                await cache.delete(`/__nb_result/${id}`);
+            } catch (_) {}
+        }
+
+        async function recoverResult(id, data, meta) {
+            if (consumedResultIds.has(id)) return false;
+            consumedResultIds.add(id);
+            const media = extractMediaFromResult(data);
+            if (!media) { await ackAndDelete(id); return false; }
+            await addToHistory({
+                type: media.type,
+                dataUrl: media.dataUrl,
+                prompt: (meta && meta.prompt) || '(recovered)',
+                model: (meta && meta.model) || 'recovered',
+                res: (meta && meta.res) || '—',
+                ratio: (meta && meta.ratio) || '—',
+                timestamp: (meta && meta.timestamp) || Date.now()
+            });
+            await ackAndDelete(id);
+            return true;
+        }
+
+        // Fold any completed-but-unsaved SW results into history.
+        async function syncFromServiceWorker() {
+            if (!('caches' in window)) return 0;
+            let recovered = 0;
+            try {
+                const cache = await caches.open(RESULT_CACHE_NAME);
+                const keys = await cache.keys();
+                for (const req of keys) {
+                    const id = decodeURIComponent(req.url.split('/').pop() || '');
+                    if (!id || consumedResultIds.has(id) || pendingResolvers.has(id)) continue;
+                    const res = await cache.match(req);
+                    if (!res) continue;
+                    let payload = null;
+                    try { payload = await res.json(); } catch (_) {}
+                    if (!payload || !payload.ok || !payload.data) { await cache.delete(req); continue; }
+                    if (await recoverResult(payload.id || id, payload.data, payload.meta)) recovered++;
+                }
+            } catch (e) {
+                console.warn('SW sync failed:', e);
+            }
+            if (recovered > 0) refreshHistoryUI();
+            return recovered;
+        }
+
+        ensureServiceWorker().then(() => syncFromServiceWorker());
 
         function buildBody(modelKey, parts) {
             const modalities = modelKey === 'FLASH' ? ['IMAGE'] : ['TEXT', 'IMAGE'];
@@ -1154,7 +1243,7 @@
         // POST through the service worker when available, so the request
         // survives the page being backgrounded/suspended by iOS. Resolves with
         // the parsed JSON response; rejects with an Error on HTTP/API failure.
-        async function swPost(url, headers, body) {
+        async function swPost(url, headers, body, meta) {
             const controller = await ensureServiceWorker();
             if (controller) {
                 const id = (crypto.randomUUID && crypto.randomUUID()) || `${Date.now()}-${Math.random()}`;
@@ -1162,7 +1251,7 @@
                 const promise = new Promise((resolve, reject) => {
                     pendingResolvers.set(id, { resolve, reject });
                 });
-                controller.postMessage({ type: 'generate', id, url, headers: headers || {}, body });
+                controller.postMessage({ type: 'generate', id, url, headers: headers || {}, body, meta: meta || null });
                 return promise;
             }
             const response = await fetch(url, {
@@ -1180,14 +1269,14 @@
             return data;
         }
 
-        async function callApi(modelKey, body) {
+        async function callApi(modelKey, body, meta) {
             const modelId = MODELS[modelKey];
             const url = withKey(vertexEndpoint(modelId, 'generateContent'));
-            return swPost(url, {}, body);
+            return swPost(url, {}, body, meta);
         }
 
-        async function attemptGenerate(modelKey, parts) {
-            const data = await callApi(modelKey, buildBody(modelKey, parts));
+        async function attemptGenerate(modelKey, parts, meta) {
+            const data = await callApi(modelKey, buildBody(modelKey, parts), meta);
             if (!data.candidates || !data.candidates[0]) throw new Error("No candidates returned (possible safety block)");
 
             const responseParts = data.candidates[0].content && data.candidates[0].content.parts;
@@ -1382,9 +1471,10 @@
 
             // Route through the service worker so the ~30s request survives the
             // page being backgrounded/suspended by iOS.
+            const omniMeta = { type: 'video', prompt, model: 'Omni Flash', res: 'omni', ratio: aspect, timestamp: Date.now() };
             let data;
             try {
-                data = await swPost(reqUrl, reqHeaders, body);
+                data = await swPost(reqUrl, reqHeaders, body, omniMeta);
             } catch (err) {
                 const m = (err && err.message) || 'failed';
                 const isNet = /load failed|network|failed to fetch/i.test(m);
@@ -1568,16 +1658,18 @@
 
             beginCharge(priceForImage(currentModel, currentRes));
 
+            const imgMeta = (model) => ({ type: 'image', prompt, model, res: currentRes, ratio: ratioSelect.value, timestamp: Date.now() });
+
             let imagePart;
             let usedModel = currentModel;
             try {
-                imagePart = await attemptGenerate(currentModel, parts);
+                imagePart = await attemptGenerate(currentModel, parts, imgMeta(currentModel));
             } catch (firstErr) {
                 console.error(`First attempt (${currentModel}) failed:`, firstErr);
                 status.textContent = `${currentModel} failed: ${firstErr.message}. Retrying with FLASH…`;
                 await sleep(RETRY_DELAY_MS);
                 try {
-                    imagePart = await attemptGenerate('FLASH', parts);
+                    imagePart = await attemptGenerate('FLASH', parts, imgMeta('FLASH'));
                     usedModel = 'FLASH';
                 } catch (secondErr) {
                     console.error("FLASH fallback failed:", secondErr);

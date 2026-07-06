@@ -27,7 +27,7 @@ async function deleteResult(id) {
     await cache.delete(`/__nb_result/${id}`);
 }
 
-async function runGenerate({ id, url, headers, body }) {
+async function runGenerate({ id, url, headers, body, meta }) {
     let result;
     try {
         const response = await fetch(url, {
@@ -39,14 +39,14 @@ async function runGenerate({ id, url, headers, body }) {
         try { data = await response.json(); } catch (_) {}
         if (!response.ok) {
             const errMsg = (data && data.error && data.error.message) || `HTTP ${response.status}`;
-            result = { id, ok: false, error: errMsg };
+            result = { id, ok: false, error: errMsg, meta };
         } else if (data && data.error) {
-            result = { id, ok: false, error: data.error.message || 'API Error' };
+            result = { id, ok: false, error: data.error.message || 'API Error', meta };
         } else {
-            result = { id, ok: true, data };
+            result = { id, ok: true, data, meta };
         }
     } catch (err) {
-        result = { id, ok: false, error: (err && err.message) || 'Network error' };
+        result = { id, ok: false, error: (err && err.message) || 'Network error', meta };
     }
     await storeResult(id, result);
     await broadcast({ type: 'result', ...result });
