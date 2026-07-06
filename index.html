@@ -523,27 +523,42 @@
             document.getElementById('btnFLASH').classList.toggle('active-res', val === 'FLASH');
         }
 
+        // Omni accepts image OR video references; other modes are image-only.
+        function updateUploadTargets() {
+            const input = document.getElementById('imageUpload');
+            const label = document.getElementById('uploadLabel');
+            const omni = currentMode === 'VIDEO' && currentVideoModel === 'OMNI';
+            if (currentMode !== 'VIDEO') {
+                input.accept = 'image/*';
+                label.textContent = 'Upload Source Images';
+            } else if (omni) {
+                input.accept = 'image/*,video/*';
+                label.textContent = 'Upload Reference Image / Video (optional)';
+            } else {
+                input.accept = 'image/*';
+                label.textContent = 'Upload Reference Image (optional)';
+            }
+        }
+
         function setMode(val) {
             currentMode = val;
             document.getElementById('btnModeImage').classList.toggle('active-res', val === 'IMAGE');
             document.getElementById('btnModeVideo').classList.toggle('active-res', val === 'VIDEO');
             const imgCtl = document.getElementById('imageControls');
             const vidCtl = document.getElementById('videoControls');
-            const uploadLabel = document.getElementById('uploadLabel');
             const promptEl = document.getElementById('prompt');
             if (val === 'VIDEO') {
                 imgCtl.classList.add('hidden');
                 vidCtl.classList.remove('hidden');
                 vidCtl.classList.add('flex');
-                uploadLabel.textContent = 'Upload Reference Image (optional)';
                 promptEl.placeholder = 'Describe the video you want to create…';
             } else {
                 vidCtl.classList.add('hidden');
                 vidCtl.classList.remove('flex');
                 imgCtl.classList.remove('hidden');
-                uploadLabel.textContent = 'Upload Source Images';
                 promptEl.placeholder = 'Describe changes or new image...';
             }
+            updateUploadTargets();
         }
 
         function setVideoModel(val) {
@@ -554,6 +569,7 @@
             // Omni's duration/aspect are inferred from the prompt; Veo uses the selects.
             const isOmni = val === 'OMNI';
             document.getElementById('videoDurationSelect').classList.toggle('hidden', isOmni);
+            updateUploadTargets();
         }
 
         function findClosestRatio(actualRatio) {
@@ -566,19 +582,41 @@
             const files = Array.from(e.target.files);
             files.forEach(file => {
                 if (uploadedImages.length >= 20) return;
+                const isVideo = (file.type || '').startsWith('video/');
                 const reader = new FileReader();
                 reader.onload = (ev) => {
-                    const tempImg = new Image();
-                    tempImg.onload = () => {
-                        if (uploadedImages.length === 0) {
-                            const best = findClosestRatio(tempImg.width / tempImg.height);
-                            ratioSelect.value = best.value;
-                        }
+                    const url = ev.target.result;
+                    const isFirst = uploadedImages.length === 0;
+                    const push = () => {
                         const id = Date.now() + Math.random();
-                        uploadedImages.push({ id, data: ev.target.result.split(',')[1], mime: file.type, url: ev.target.result });
+                        uploadedImages.push({ id, data: url.split(',')[1], mime: file.type, url, isVideo });
                         renderPreviews();
                     };
-                    tempImg.src = ev.target.result;
+                    if (isVideo) {
+                        if (isFirst) {
+                            const v = document.createElement('video');
+                            v.onloadedmetadata = () => {
+                                if (v.videoWidth && v.videoHeight) {
+                                    ratioSelect.value = findClosestRatio(v.videoWidth / v.videoHeight).value;
+                                    const va = document.getElementById('videoAspectSelect');
+                                    if (va) va.value = v.videoWidth >= v.videoHeight ? '16:9' : '9:16';
+                                }
+                                push();
+                            };
+                            v.onerror = push;
+                            v.src = url;
+                        } else {
+                            push();
+                        }
+                    } else {
+                        const tempImg = new Image();
+                        tempImg.onload = () => {
+                            if (isFirst) ratioSelect.value = findClosestRatio(tempImg.width / tempImg.height).value;
+                            push();
+                        };
+                        tempImg.onerror = push;
+                        tempImg.src = url;
+                    }
                 };
                 reader.readAsDataURL(file);
             });
@@ -593,14 +631,22 @@
             uploadedImages.forEach(img => {
                 const div = document.createElement('div');
                 div.className = "preview-container aspect-square bg-secondary";
-                div.innerHTML = `
-                    <img src="${img.url}" class="w-full h-full object-cover" onclick="enlarge('${img.url}')">
-                    <button class="delete-btn" onclick="removeImg(${img.id})">&times;</button>
-                `;
+                if (img.isVideo) {
+                    div.innerHTML = `
+                        <video src="${img.url}" muted playsinline class="w-full h-full object-cover" onclick="enlarge('${img.url}','video')"></video>
+                        <div class="absolute inset-0 flex items-center justify-center text-white text-xl" style="pointer-events:none">▶</div>
+                        <button class="delete-btn" onclick="removeImg(${img.id})">&times;</button>
+                    `;
+                } else {
+                    div.innerHTML = `
+                        <img src="${img.url}" class="w-full h-full object-cover" onclick="enlarge('${img.url}')">
+                        <button class="delete-btn" onclick="removeImg(${img.id})">&times;</button>
+                    `;
+                }
                 grid.appendChild(div);
             });
 
-            count.textContent = `${uploadedImages.length} images uploaded. Max 20.`;
+            count.textContent = `${uploadedImages.length} uploaded. Max 20.`;
             hint.classList.toggle('hidden', uploadedImages.length === 0);
         }
 
@@ -1131,19 +1177,25 @@
         async function handleOmniGenerate(prompt, status) {
             const aspect = document.getElementById('videoAspectSelect').value;
             const key = getKey();
-            const hasImage = uploadedImages.length > 0;
+            const hasMedia = uploadedImages.length > 0;
+            const hasVideoRef = uploadedImages.some(m => m.isVideo);
+
+            const mediaItems = uploadedImages.map(m => ({
+                type: m.isVideo ? 'video' : 'image',
+                data: m.data,
+                mime_type: m.mime
+            }));
 
             const body = {
                 model: OMNI_MODEL,
-                input: hasImage
-                    ? [
-                        { type: 'image', data: uploadedImages[0].data, mime_type: uploadedImages[0].mime },
-                        { type: 'text', text: prompt }
-                      ]
-                    : prompt,
+                input: hasMedia ? [...mediaItems, { type: 'text', text: prompt }] : prompt,
                 response_format: { type: 'video', aspect_ratio: aspect }
             };
-            if (hasImage) body.generation_config = { video_config: { task: 'image_to_video' } };
+            // Image-only → image_to_video. With a video reference, let the model
+            // infer (edit / video-to-video) from the prompt.
+            if (hasMedia && !hasVideoRef) {
+                body.generation_config = { video_config: { task: 'image_to_video' } };
+            }
 
             beginCharge(PRICING.video.OMNI || 0);
 
