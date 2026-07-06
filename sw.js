@@ -27,12 +27,12 @@ async function deleteResult(id) {
     await cache.delete(`/__nb_result/${id}`);
 }
 
-async function runGenerate({ id, url, body }) {
+async function runGenerate({ id, url, headers, body }) {
     let result;
     try {
         const response = await fetch(url, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ...(headers || {}) },
             body: JSON.stringify(body)
         });
         let data = null;

@@ -1151,9 +1151,10 @@
             };
         }
 
-        async function callApi(modelKey, body) {
-            const modelId = MODELS[modelKey];
-            const url = withKey(vertexEndpoint(modelId, 'generateContent'));
+        // POST through the service worker when available, so the request
+        // survives the page being backgrounded/suspended by iOS. Resolves with
+        // the parsed JSON response; rejects with an Error on HTTP/API failure.
+        async function swPost(url, headers, body) {
             const controller = await ensureServiceWorker();
             if (controller) {
                 const id = (crypto.randomUUID && crypto.randomUUID()) || `${Date.now()}-${Math.random()}`;
@@ -1161,25 +1162,28 @@
                 const promise = new Promise((resolve, reject) => {
                     pendingResolvers.set(id, { resolve, reject });
                 });
-                controller.postMessage({ type: 'generate', id, url, body });
+                controller.postMessage({ type: 'generate', id, url, headers: headers || {}, body });
                 return promise;
             }
             const response = await fetch(url, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 'Content-Type': 'application/json', ...(headers || {}) },
                 body: JSON.stringify(body)
             });
+            const text = await response.text();
+            let data = null;
+            try { data = JSON.parse(text); } catch (_) {}
             if (!response.ok) {
-                let errMsg = `HTTP ${response.status}`;
-                try {
-                    const errData = await response.json();
-                    if (errData.error && errData.error.message) errMsg = errData.error.message;
-                } catch (_) {}
-                throw new Error(errMsg);
+                throw new Error((data && data.error && data.error.message) || `HTTP ${response.status}`);
             }
-            const data = await response.json();
-            if (data.error) throw new Error(data.error.message || "API Error");
+            if (data && data.error) throw new Error(data.error.message || 'API Error');
             return data;
+        }
+
+        async function callApi(modelKey, body) {
+            const modelId = MODELS[modelKey];
+            const url = withKey(vertexEndpoint(modelId, 'generateContent'));
+            return swPost(url, {}, body);
         }
 
         async function attemptGenerate(modelKey, parts) {
@@ -1373,31 +1377,24 @@
                 status.textContent = 'Starting Omni Flash (Gemini API / paid)…';
             }
 
-            const payload = JSON.stringify(body);
-            const approxMb = Math.round(payload.length / 1048576 * 10) / 10;
-            let resp;
+            const approxMb = Math.round(JSON.stringify(body).length / 1048576 * 10) / 10;
+            status.textContent = 'Rendering Omni Flash… (safe to background)';
+
+            // Route through the service worker so the ~30s request survives the
+            // page being backgrounded/suspended by iOS.
+            let data;
             try {
-                resp = await fetch(reqUrl, { method: 'POST', headers: reqHeaders, body: payload });
-            } catch (netErr) {
-                console.error('Omni network error:', netErr, 'payload ~', approxMb, 'MB');
-                const sizeHint = approxMb >= 8
-                    ? ` The request is large (~${approxMb} MB) — a big reference clip can fail to upload on mobile; try a shorter/smaller reference.`
-                    : '';
-                const tokenHint = omniToken ? ' If it has been ~1h, refresh the access token.' : '';
-                throw new Error(`Network error reaching Omni.${sizeHint}${tokenHint} Check connection and retry.`);
-            }
-            let text = await resp.text();
-            let data = null;
-            try { data = JSON.parse(text); } catch (_) {}
-            if (!resp.ok) {
-                const msg = (data && data.error && data.error.message) || `HTTP ${resp.status}`;
-                const status_ = (data && data.error && data.error.status) ? ` [${data.error.status}]` : '';
-                console.error('Omni error body:', text);
-                alert(`Omni Flash failed (HTTP ${resp.status})${status_}.\n\nReason:\n${msg}\n\nRaw:\n${text.slice(0, 600)}`);
-                throw new Error(`Omni: HTTP ${resp.status} — ${msg}`);
+                data = await swPost(reqUrl, reqHeaders, body);
+            } catch (err) {
+                const m = (err && err.message) || 'failed';
+                const isNet = /load failed|network|failed to fetch/i.test(m);
+                const sizeHint = (isNet && approxMb >= 8)
+                    ? ` Request is large (~${approxMb} MB) — a big reference clip can fail to upload; use a shorter one.` : '';
+                const tokenHint = (isNet && omniToken) ? ' If it has been ~1h, refresh the token.' : '';
+                throw new Error(`Omni: ${m}${sizeHint}${tokenHint}`);
             }
 
-            // Poll if the call returned a long-running operation.
+            // Poll only if a long-running operation came back (Omni is normally synchronous).
             const startMs = Date.now();
             while (data && data.name && data.done !== true && !findVideoInObject(data)) {
                 if (Date.now() - startMs > VIDEO_MAX_WAIT_MS) throw new Error('Omni: timed out');
@@ -1411,9 +1408,9 @@
 
             const result = findVideoInObject(data);
             if (!result) {
-                console.error('Omni raw response:', data || text);
-                alert('Omni Flash reached the server but returned no recognizable video.\n\nRaw response (copy this for debugging):\n\n' + text.slice(0, 1000));
-                throw new Error('Omni: no video in response (raw shown)');
+                console.error('Omni raw response:', data);
+                alert('Omni reached the server but returned no recognizable video.\n\nRaw:\n' + JSON.stringify(data || {}).slice(0, 1000));
+                throw new Error('Omni: no video in response');
             }
 
             let dataUrl;
