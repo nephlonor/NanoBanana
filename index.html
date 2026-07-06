@@ -785,6 +785,9 @@
 
         async function addToHistory(record) {
             if (!record.type) record.type = 'image';
+            if (record.type === 'image' && !record.thumb) {
+                record.thumb = await makeImageThumb(record.dataUrl);
+            }
             try {
                 const db = await openHistoryDb();
                 await new Promise((resolve, reject) => {
@@ -817,26 +820,6 @@
             }
         }
 
-        async function getHistory() {
-            try {
-                const db = await openHistoryDb();
-                const items = await new Promise((resolve) => {
-                    const tx = db.transaction(HISTORY_STORE, 'readonly');
-                    const req = tx.objectStore(HISTORY_STORE).getAll();
-                    req.onsuccess = () => resolve(req.result || []);
-                    req.onerror = () => resolve([]);
-                });
-                db.close();
-                items.sort((a, b) => b.timestamp - a.timestamp);
-                // Drop the heavy video base64 from the in-memory list so the
-                // grid doesn't retain tens of MB per clip; fetched by id on tap.
-                items.forEach((it) => { if (it.type === 'video') it.dataUrl = null; });
-                return items;
-            } catch (e) {
-                return [];
-            }
-        }
-
         async function getHistoryItem(id) {
             try {
                 const db = await openHistoryDb();
@@ -851,6 +834,65 @@
             } catch (e) {
                 return null;
             }
+        }
+
+        // Lightweight metadata (id, prompt, thumb…) via cursor — never holds
+        // more than one full record in memory at a time, so a big history
+        // can't blow the memory budget the way getAll() did.
+        async function getHistoryMeta() {
+            try {
+                const db = await openHistoryDb();
+                const list = await new Promise((resolve) => {
+                    const out = [];
+                    const tx = db.transaction(HISTORY_STORE, 'readonly');
+                    const cur = tx.objectStore(HISTORY_STORE).openCursor();
+                    cur.onsuccess = (e) => {
+                        const c = e.target.result;
+                        if (!c) { resolve(out); return; }
+                        const v = c.value;
+                        out.push({ id: v.id, type: v.type || 'image', prompt: v.prompt, model: v.model, res: v.res, ratio: v.ratio, timestamp: v.timestamp, thumb: v.thumb || null });
+                        c.continue();
+                    };
+                    cur.onerror = () => resolve(out);
+                });
+                db.close();
+                return list.sort((a, b) => b.timestamp - a.timestamp);
+            } catch (e) {
+                return [];
+            }
+        }
+
+        async function putHistory(rec) {
+            try {
+                const db = await openHistoryDb();
+                await new Promise((res) => {
+                    const tx = db.transaction(HISTORY_STORE, 'readwrite');
+                    tx.objectStore(HISTORY_STORE).put(rec);
+                    tx.oncomplete = res; tx.onerror = res;
+                });
+                db.close();
+            } catch (_) {}
+        }
+
+        // Downscale an image data URL to a small JPEG thumbnail (~320px).
+        function makeImageThumb(dataUrl) {
+            return new Promise((resolve) => {
+                const img = new Image();
+                img.onload = () => {
+                    try {
+                        const MAX = 320;
+                        const scale = Math.min(1, MAX / Math.max(img.width, img.height));
+                        const cw = Math.max(1, Math.round(img.width * scale));
+                        const ch = Math.max(1, Math.round(img.height * scale));
+                        const c = document.createElement('canvas');
+                        c.width = cw; c.height = ch;
+                        c.getContext('2d').drawImage(img, 0, 0, cw, ch);
+                        resolve(c.toDataURL('image/jpeg', 0.6));
+                    } catch (_) { resolve(null); }
+                };
+                img.onerror = () => resolve(null);
+                img.src = dataUrl;
+            });
         }
 
         async function clearHistory() {
@@ -876,14 +918,34 @@
             return d.toLocaleString(undefined, opts);
         }
 
+        async function backfillThumbs(missing) {
+            for (const id of missing) {
+                const rec = await getHistoryItem(id);
+                if (!rec || !rec.dataUrl) continue;
+                const thumb = await makeImageThumb(rec.dataUrl);
+                if (!thumb) continue;
+                rec.thumb = thumb;
+                await putHistory(rec);
+                const holder = document.querySelector(`[data-thumb="${id}"]`);
+                if (holder) {
+                    const im = document.createElement('img');
+                    im.src = thumb;
+                    im.className = 'w-full h-full object-cover';
+                    holder.innerHTML = '';
+                    holder.appendChild(im);
+                }
+            }
+        }
+
         async function renderHistory() {
             const grid = document.getElementById('historyGrid');
-            const items = await getHistory();
+            const items = await getHistoryMeta();
             grid.innerHTML = '';
             if (items.length === 0) {
                 grid.innerHTML = '<p class="col-span-2 sm:col-span-3 text-center text-xs text-gray-500 py-6">No images yet.</p>';
                 return;
             }
+            const missingThumbs = [];
             items.forEach(item => {
                 const isVideo = item.type === 'video';
                 const card = document.createElement('div');
@@ -892,10 +954,8 @@
                 const imgWrap = document.createElement('div');
                 imgWrap.className = 'aspect-square bg-black cursor-pointer relative';
                 if (isVideo) {
-                    // Do NOT load the video here. Rendering many multi-MB
-                    // data-URL <video> elements at once exhausts iOS Safari's
-                    // memory and crashes the tab. Show a placeholder tile and
-                    // load the actual video only when tapped (one at a time).
+                    // Never load the video in the grid — show a placeholder tile;
+                    // the clip is fetched only when tapped (one at a time).
                     imgWrap.className = 'aspect-square cursor-pointer relative flex items-center justify-center';
                     imgWrap.style.background = 'linear-gradient(135deg,#1f2937,#0b0f0e)';
                     const badge = document.createElement('div');
@@ -911,12 +971,24 @@
                         if (rec && rec.dataUrl) enlarge(rec.dataUrl, 'video');
                     });
                 } else {
-                    const img = document.createElement('img');
-                    img.src = item.dataUrl;
-                    img.loading = 'lazy';
-                    img.className = 'w-full h-full object-cover';
-                    imgWrap.appendChild(img);
-                    imgWrap.addEventListener('click', () => enlarge(item.dataUrl, 'image'));
+                    // Show the small stored thumbnail — never the full image.
+                    if (item.thumb) {
+                        const img = document.createElement('img');
+                        img.src = item.thumb;
+                        img.loading = 'lazy';
+                        img.className = 'w-full h-full object-cover';
+                        imgWrap.appendChild(img);
+                    } else {
+                        // Old entry without a thumbnail — show a neutral tile and
+                        // backfill a thumbnail in the background (one at a time).
+                        imgWrap.style.background = 'linear-gradient(135deg,#134e4a,#0b0f0e)';
+                        imgWrap.setAttribute('data-thumb', item.id);
+                        missingThumbs.push(item.id);
+                    }
+                    imgWrap.addEventListener('click', async () => {
+                        const rec = await getHistoryItem(item.id);
+                        if (rec && rec.dataUrl) enlarge(rec.dataUrl, 'image');
+                    });
                 }
 
                 const meta = document.createElement('div');
@@ -967,6 +1039,8 @@
                 card.appendChild(meta);
                 grid.appendChild(card);
             });
+
+            if (missingThumbs.length) backfillThumbs(missingThumbs);
         }
 
         async function updateHistoryCount() {
