@@ -359,6 +359,23 @@
             if (!amount || amount <= 0) return;
             setCreditUsed(getCreditUsed() + amount);
         }
+
+        // Charge-on-send, refund-on-failure. pendingCharge holds what was
+        // provisionally deducted for the in-flight generation.
+        let pendingCharge = 0;
+        function beginCharge(amount) {
+            pendingCharge = amount || 0;
+            if (pendingCharge > 0) setCreditUsed(getCreditUsed() + pendingCharge);
+        }
+        function settleCharge(actualAmount) {
+            const diff = (actualAmount || 0) - pendingCharge;
+            if (diff) setCreditUsed(getCreditUsed() + diff);
+            pendingCharge = 0;
+        }
+        function refundCharge() {
+            if (pendingCharge > 0) setCreditUsed(getCreditUsed() - pendingCharge);
+            pendingCharge = 0;
+        }
         function priceForImage(model, res) {
             return (PRICING.image[model] && PRICING.image[model][res]) || 0;
         }
@@ -1113,6 +1130,8 @@
             };
             if (hasImage) body.generation_config = { video_config: { task: 'image_to_video' } };
 
+            beginCharge(PRICING.video.OMNI || 0);
+
             status.textContent = 'Starting Omni Flash…';
             const resp = await fetch(`${OMNI_ENDPOINT}?key=${encodeURIComponent(key)}`, {
                 method: 'POST',
@@ -1170,7 +1189,7 @@
             outVid.play().catch(() => {});
             document.getElementById('downloadBtn').classList.remove('hidden');
 
-            addCreditUsage(PRICING.video.OMNI || 0);
+            settleCharge(PRICING.video.OMNI || 0);
 
             addToHistory({
                 type: 'video',
@@ -1211,6 +1230,8 @@
                 }
             };
 
+            beginCharge(priceForVideo(currentVideoModel, duration));
+
             status.textContent = `Starting ${modelLabel}…`;
             const opName = await startVideoOperation(modelId, body);
 
@@ -1239,7 +1260,7 @@
             outVid.play().catch(() => {});
             document.getElementById('downloadBtn').classList.remove('hidden');
 
-            addCreditUsage(priceForVideo(currentVideoModel, duration));
+            settleCharge(priceForVideo(currentVideoModel, duration));
 
             addToHistory({
                 type: 'video',
@@ -1297,6 +1318,8 @@
             const parts = uploadedImages.map(img => ({ inlineData: { mimeType: img.mime, data: img.data } }));
             parts.push({ text: prompt });
 
+            beginCharge(priceForImage(currentModel, currentRes));
+
             let imagePart;
             let usedModel = currentModel;
             try {
@@ -1318,7 +1341,7 @@
             const mime = imagePart.inlineData.mimeType || 'image/png';
             const newUrl = `data:${mime};base64,${b64}`;
 
-            addCreditUsage(priceForImage(usedModel, currentRes));
+            settleCharge(priceForImage(usedModel, currentRes));
 
             addToHistory({
                 type: 'image',
@@ -1341,6 +1364,7 @@
 
         function finish(isError, errMsg) {
             stopKeepAlive();
+            if (isError) refundCharge(); else pendingCharge = 0;
             const genBtn = document.getElementById('genBtn');
             const status = document.getElementById('statusMsg');
 
