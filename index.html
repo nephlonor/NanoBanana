@@ -100,11 +100,17 @@
                     <option value="asia-southeast1">asia-southeast1 (Singapore)</option>
                     <option value="asia-northeast1">asia-northeast1 (Tokyo)</option>
                 </select>
+                <label class="block text-[10px] text-gray-400 mt-2 mb-1">Omni proxy URL (optional — routes Omni to Vertex / free credits)</label>
+                <input id="proxyUrlInput" type="url" autocomplete="off" placeholder="https://…run.app"
+                    class="w-full bg-secondary p-2 rounded-lg border-none focus:ring-2 focus:ring-teal-400 text-sm mb-2">
+                <label class="block text-[10px] text-gray-400 mb-1">Omni proxy secret</label>
+                <input id="proxySecretInput" type="password" autocomplete="off" placeholder="Shared secret"
+                    class="w-full bg-secondary p-2 rounded-lg border-none focus:ring-2 focus:ring-teal-400 text-sm mb-2">
                 <div class="flex gap-2 mt-2">
                     <button onclick="saveKey()" class="flex-1 py-2 bg-accent rounded-lg text-sm font-bold active:scale-95 transition">Save</button>
                     <button onclick="clearKey()" class="flex-1 py-2 bg-secondary rounded-lg text-sm font-bold active:scale-95 transition">Clear</button>
                 </div>
-                <p class="text-[10px] text-gray-500 mt-2">Vertex AI project <span class="text-gray-300 font-mono">fhnw-gemini</span>. Key stored only in this browser. Preview models may only exist in some regions — us-central1 is widest.</p>
+                <p class="text-[10px] text-gray-500 mt-2">Vertex AI project <span class="text-gray-300 font-mono">fhnw-gemini</span>. Key stored only in this browser. Without a proxy, Omni uses the Gemini API (paid credits); with the proxy it uses Vertex (free credits).</p>
             </div>
         </details>
 
@@ -237,6 +243,8 @@
 
         const KEY_STORAGE = 'nanobanana_api_key';
         const REGION_STORAGE = 'nanobanana_region';
+        const PROXY_URL_STORAGE = 'nanobanana_proxy_url';
+        const PROXY_SECRET_STORAGE = 'nanobanana_proxy_secret';
         const VERTEX_PROJECT = 'fhnw-gemini';
         const DEFAULT_REGION = 'us-central1';
 
@@ -256,6 +264,8 @@
 
         function getKey() { return localStorage.getItem(KEY_STORAGE) || ''; }
         function getRegion() { return localStorage.getItem(REGION_STORAGE) || DEFAULT_REGION; }
+        function getProxyUrl() { return (localStorage.getItem(PROXY_URL_STORAGE) || '').trim(); }
+        function getProxySecret() { return localStorage.getItem(PROXY_SECRET_STORAGE) || ''; }
 
         function vertexEndpoint(modelId, verb) {
             const region = getRegion();
@@ -277,8 +287,13 @@
             const container = details.parentElement;
             const regionSel = document.getElementById('regionSelect');
             if (regionSel) regionSel.value = region;
+            const proxyUrlIn = document.getElementById('proxyUrlInput');
+            const proxySecretIn = document.getElementById('proxySecretInput');
+            if (proxyUrlIn) proxyUrlIn.value = getProxyUrl();
+            if (proxySecretIn) proxySecretIn.value = getProxySecret();
             if (k) {
-                status.textContent = `API Key: set (…${k.slice(-4)}) · ${region}`;
+                const omni = getProxyUrl() ? ' · omni:proxy' : '';
+                status.textContent = `API Key: set (…${k.slice(-4)}) · ${region}${omni}`;
                 details.open = false;
                 details.classList.add('mt-2');
                 details.classList.remove('mb-4');
@@ -300,12 +315,18 @@
                 localStorage.setItem(KEY_STORAGE, v);
                 document.getElementById('apiKeyInput').value = '';
             }
+            const purl = document.getElementById('proxyUrlInput').value.trim();
+            const psec = document.getElementById('proxySecretInput').value;
+            if (purl) localStorage.setItem(PROXY_URL_STORAGE, purl); else localStorage.removeItem(PROXY_URL_STORAGE);
+            if (psec) localStorage.setItem(PROXY_SECRET_STORAGE, psec); else localStorage.removeItem(PROXY_SECRET_STORAGE);
             updateKeyStatus();
         }
 
         function clearKey() {
             localStorage.removeItem(KEY_STORAGE);
             localStorage.removeItem(REGION_STORAGE);
+            localStorage.removeItem(PROXY_URL_STORAGE);
+            localStorage.removeItem(PROXY_SECRET_STORAGE);
             updateKeyStatus();
         }
 
@@ -1136,13 +1157,9 @@
         }
 
         const OMNI_MODEL = 'gemini-omni-flash-preview';
-        // Interactions API lives on the Agent Platform (Vertex) API at v1beta1,
-        // so Omni bills against the same project/credits as image + Veo and
-        // works with the Vertex key (no separate Gemini-API key needed).
-        function omniEndpoint() {
-            const region = getRegion();
-            return `https://aiplatform.googleapis.com/v1beta1/projects/${VERTEX_PROJECT}/locations/${region}/interactions`;
-        }
+        // Omni uses the Interactions API. Vertex's interactions endpoint needs
+        // OAuth (via the Cloud Run proxy → free credits); without a proxy we
+        // call the Gemini Developer API directly with the key (paid credits).
 
         // Interactions API returns steps[].content[] items like
         //   { type:"video", mime_type:"video/mp4", data:"<base64>" }  (or a uri).
@@ -1205,10 +1222,26 @@
 
             beginCharge(PRICING.video.OMNI || 0);
 
-            status.textContent = 'Starting Omni Flash…';
-            const resp = await fetch(`${omniEndpoint()}?key=${encodeURIComponent(key)}`, {
+            // With a proxy configured → Vertex Interactions (free credits).
+            // Without → Gemini Developer API directly (works, but paid credits).
+            const proxyUrl = getProxyUrl();
+            let reqUrl, reqHeaders;
+            if (proxyUrl) {
+                reqUrl = proxyUrl;
+                reqHeaders = { 'Content-Type': 'application/json' };
+                const secret = getProxySecret();
+                if (secret) reqHeaders['X-Proxy-Secret'] = secret;
+                body.__region = getRegion();
+                status.textContent = 'Starting Omni Flash (Vertex / free)…';
+            } else {
+                reqUrl = `https://generativelanguage.googleapis.com/v1beta/interactions?key=${encodeURIComponent(key)}`;
+                reqHeaders = { 'Content-Type': 'application/json' };
+                status.textContent = 'Starting Omni Flash (Gemini API / paid)…';
+            }
+
+            const resp = await fetch(reqUrl, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: reqHeaders,
                 body: JSON.stringify(body)
             });
             let text = await resp.text();

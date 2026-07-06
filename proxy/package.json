@@ -1,0 +1,15 @@
+{
+  "name": "nanobanana-omni-proxy",
+  "version": "1.0.0",
+  "description": "OAuth-signing proxy so the browser app can reach the Vertex Interactions API (Omni Flash) on free credits.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "google-auth-library": "^9.15.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
