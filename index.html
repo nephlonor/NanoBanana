@@ -158,9 +158,6 @@
                 <select id="videoAspectSelect" class="bg-input border-none text-sm rounded-lg p-2 focus:ring-2 focus:ring-teal-400">
                     <option value="16:9">16:9</option>
                     <option value="9:16">9:16</option>
-                    <option value="1:1">1:1</option>
-                    <option value="4:3">4:3</option>
-                    <option value="3:4">3:4</option>
                 </select>
             </div>
         </div>
@@ -616,9 +613,10 @@
             );
         }
 
+        // Veo and Omni only support 16:9 and 9:16, so match the reference's
+        // orientation (landscape → 16:9, portrait/square → 9:16).
         const VIDEO_ASPECTS = [
-            { value: '16:9', r: 16 / 9 }, { value: '9:16', r: 9 / 16 }, { value: '1:1', r: 1 },
-            { value: '4:3', r: 4 / 3 }, { value: '3:4', r: 3 / 4 }
+            { value: '16:9', r: 16 / 9 }, { value: '9:16', r: 9 / 16 }
         ];
         function nearestVideoAspect(ratio) {
             return VIDEO_ASPECTS.reduce((p, c) => Math.abs(c.r - ratio) < Math.abs(p.r - ratio) ? c : p).value;
