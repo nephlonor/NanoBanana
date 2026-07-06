@@ -158,6 +158,9 @@
                 <select id="videoAspectSelect" class="bg-input border-none text-sm rounded-lg p-2 focus:ring-2 focus:ring-teal-400">
                     <option value="16:9">16:9</option>
                     <option value="9:16">9:16</option>
+                    <option value="1:1">1:1</option>
+                    <option value="4:3">4:3</option>
+                    <option value="3:4">3:4</option>
                 </select>
             </div>
         </div>
@@ -613,6 +616,14 @@
             );
         }
 
+        const VIDEO_ASPECTS = [
+            { value: '16:9', r: 16 / 9 }, { value: '9:16', r: 9 / 16 }, { value: '1:1', r: 1 },
+            { value: '4:3', r: 4 / 3 }, { value: '3:4', r: 3 / 4 }
+        ];
+        function nearestVideoAspect(ratio) {
+            return VIDEO_ASPECTS.reduce((p, c) => Math.abs(c.r - ratio) < Math.abs(p.r - ratio) ? c : p).value;
+        }
+
         document.getElementById('imageUpload').addEventListener('change', (e) => {
             const files = Array.from(e.target.files);
             files.forEach(file => {
@@ -622,34 +633,25 @@
                 reader.onload = (ev) => {
                     const url = ev.target.result;
                     const isFirst = uploadedImages.length === 0;
-                    const push = () => {
+                    const push = (w, h) => {
                         const id = Date.now() + Math.random();
-                        uploadedImages.push({ id, data: url.split(',')[1], mime: file.type, url, isVideo });
+                        uploadedImages.push({ id, data: url.split(',')[1], mime: file.type, url, isVideo, w: w || 0, h: h || 0 });
+                        if (isFirst && w && h) {
+                            ratioSelect.value = findClosestRatio(w / h).value;
+                            const va = document.getElementById('videoAspectSelect');
+                            if (va) va.value = nearestVideoAspect(w / h);
+                        }
                         renderPreviews();
                     };
                     if (isVideo) {
-                        if (isFirst) {
-                            const v = document.createElement('video');
-                            v.onloadedmetadata = () => {
-                                if (v.videoWidth && v.videoHeight) {
-                                    ratioSelect.value = findClosestRatio(v.videoWidth / v.videoHeight).value;
-                                    const va = document.getElementById('videoAspectSelect');
-                                    if (va) va.value = v.videoWidth >= v.videoHeight ? '16:9' : '9:16';
-                                }
-                                push();
-                            };
-                            v.onerror = push;
-                            v.src = url;
-                        } else {
-                            push();
-                        }
+                        const v = document.createElement('video');
+                        v.onloadedmetadata = () => push(v.videoWidth, v.videoHeight);
+                        v.onerror = () => push();
+                        v.src = url;
                     } else {
                         const tempImg = new Image();
-                        tempImg.onload = () => {
-                            if (isFirst) ratioSelect.value = findClosestRatio(tempImg.width / tempImg.height).value;
-                            push();
-                        };
-                        tempImg.onerror = push;
+                        tempImg.onload = () => push(tempImg.width, tempImg.height);
+                        tempImg.onerror = () => push();
                         tempImg.src = url;
                     }
                 };
@@ -1212,10 +1214,16 @@
         }
 
         async function handleOmniGenerate(prompt, status) {
-            const aspect = document.getElementById('videoAspectSelect').value;
             const key = getKey();
             const hasMedia = uploadedImages.length > 0;
             const hasVideoRef = uploadedImages.some(m => m.isVideo);
+
+            // Always match the first reference's aspect ratio; fall back to the
+            // dropdown only when there's no reference (text-to-video).
+            const ref = uploadedImages[0];
+            const aspect = (ref && ref.w && ref.h)
+                ? nearestVideoAspect(ref.w / ref.h)
+                : document.getElementById('videoAspectSelect').value;
 
             const mediaItems = uploadedImages.map(m => ({
                 type: m.isVideo ? 'video' : 'image',
