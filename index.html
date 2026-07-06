@@ -134,6 +134,7 @@
             <div class="flex bg-gray-700 p-1 rounded-full">
                 <button onclick="setVideoModel('QUALITY')" id="btnVidQ" class="px-3 py-1 rounded-full text-xs font-bold active-res">VEO 3.1</button>
                 <button onclick="setVideoModel('FAST')" id="btnVidF" class="px-3 py-1 rounded-full text-xs font-bold">3.1 FAST</button>
+                <button onclick="setVideoModel('OMNI')" id="btnVidO" class="px-3 py-1 rounded-full text-xs font-bold">OMNI</button>
             </div>
             <div class="flex items-center gap-2">
                 <select id="videoDurationSelect" class="bg-input border-none text-sm rounded-lg p-2 focus:ring-2 focus:ring-teal-400">
@@ -334,7 +335,8 @@
             },
             video: {
                 QUALITY: 0.32,
-                FAST:    0.12
+                FAST:    0.12,
+                OMNI:    0.12
             }
         };
 
@@ -531,6 +533,10 @@
             currentVideoModel = val;
             document.getElementById('btnVidQ').classList.toggle('active-res', val === 'QUALITY');
             document.getElementById('btnVidF').classList.toggle('active-res', val === 'FAST');
+            document.getElementById('btnVidO').classList.toggle('active-res', val === 'OMNI');
+            // Omni's duration/aspect are inferred from the prompt; Veo uses the selects.
+            const isOmni = val === 'OMNI';
+            document.getElementById('videoDurationSelect').classList.toggle('hidden', isOmni);
         }
 
         function findClosestRatio(actualRatio) {
@@ -1066,7 +1072,123 @@
             });
         }
 
+        const OMNI_MODEL = 'gemini-omni-flash-preview';
+        const OMNI_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/interactions';
+
+        // Interactions API response shape is undocumented — search the JSON for a video.
+        function findVideoInObject(obj, depth) {
+            depth = depth || 0;
+            if (!obj || depth > 7) return null;
+            if (Array.isArray(obj)) {
+                for (const it of obj) { const r = findVideoInObject(it, depth + 1); if (r) return r; }
+                return null;
+            }
+            if (typeof obj !== 'object') return null;
+            if (obj.video && (obj.video.uri || obj.video.bytesBase64Encoded || obj.video.data)) {
+                return { uri: obj.video.uri, base64: obj.video.bytesBase64Encoded || obj.video.data, mime: obj.video.mimeType || 'video/mp4' };
+            }
+            if (obj.mimeType && /video/i.test(obj.mimeType) && (obj.data || obj.bytesBase64Encoded)) {
+                return { base64: obj.data || obj.bytesBase64Encoded, mime: obj.mimeType };
+            }
+            const anyUri = obj.uri || obj.videoUri || obj.fileUri;
+            if (anyUri && /\.mp4|video/i.test(anyUri)) return { uri: anyUri, mime: 'video/mp4' };
+            for (const k in obj) { const r = findVideoInObject(obj[k], depth + 1); if (r) return r; }
+            return null;
+        }
+
+        async function handleOmniGenerate(prompt, status) {
+            const aspect = document.getElementById('videoAspectSelect').value;
+            const key = getKey();
+            const hasImage = uploadedImages.length > 0;
+
+            const body = {
+                model: OMNI_MODEL,
+                input: hasImage
+                    ? [
+                        { type: 'image', data: uploadedImages[0].data, mime_type: uploadedImages[0].mime },
+                        { type: 'text', text: prompt }
+                      ]
+                    : prompt,
+                response_format: { type: 'video', aspect_ratio: aspect }
+            };
+            if (hasImage) body.generation_config = { video_config: { task: 'image_to_video' } };
+
+            status.textContent = 'Starting Omni Flash…';
+            const resp = await fetch(`${OMNI_ENDPOINT}?key=${encodeURIComponent(key)}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+            });
+            let text = await resp.text();
+            let data = null;
+            try { data = JSON.parse(text); } catch (_) {}
+            if (!resp.ok) {
+                const msg = (data && data.error && data.error.message) || `HTTP ${resp.status}`;
+                throw new Error(`Omni: ${msg}`);
+            }
+
+            // Poll if the call returned a long-running operation.
+            const startMs = Date.now();
+            while (data && data.name && data.done !== true && !findVideoInObject(data)) {
+                if (Date.now() - startMs > VIDEO_MAX_WAIT_MS) throw new Error('Omni: timed out');
+                await sleep(VIDEO_POLL_INTERVAL_MS);
+                status.textContent = `Rendering (Omni)… ${Math.floor((Date.now() - startMs) / 1000)}s (safe to background)`;
+                const pr = await fetch(`https://generativelanguage.googleapis.com/v1beta/${data.name}?key=${encodeURIComponent(key)}`);
+                const pt = await pr.text();
+                try { data = JSON.parse(pt); } catch (_) {}
+                if (data && data.error) throw new Error(`Omni: ${data.error.message || 'operation failed'}`);
+            }
+
+            const result = findVideoInObject(data);
+            if (!result) {
+                console.error('Omni raw response:', data || text);
+                alert('Omni Flash reached the server but returned no recognizable video.\n\nRaw response (copy this for debugging):\n\n' + text.slice(0, 1000));
+                throw new Error('Omni: no video in response (raw shown)');
+            }
+
+            let dataUrl;
+            if (result.base64) {
+                dataUrl = `data:${result.mime};base64,${result.base64}`;
+            } else {
+                status.textContent = 'Downloading video…';
+                const dl = await fetch(`${result.uri}${result.uri.includes('?') ? '&' : '?'}key=${encodeURIComponent(key)}`);
+                if (!dl.ok) throw new Error(`Omni download HTTP ${dl.status}`);
+                const blob = await dl.blob();
+                dataUrl = await new Promise((res, rej) => {
+                    const r = new FileReader();
+                    r.onload = () => res(r.result);
+                    r.onerror = () => rej(new Error('Failed to read video'));
+                    r.readAsDataURL(blob);
+                });
+            }
+
+            const outImg = document.getElementById('outputImg');
+            const outVid = document.getElementById('outputVid');
+            outImg.classList.add('hidden');
+            outVid.classList.remove('hidden');
+            outVid.src = dataUrl;
+            outVid.play().catch(() => {});
+            document.getElementById('downloadBtn').classList.remove('hidden');
+
+            addCreditUsage(PRICING.video.OMNI || 0);
+
+            addToHistory({
+                type: 'video',
+                dataUrl,
+                prompt,
+                model: 'Omni Flash',
+                res: 'omni',
+                ratio: aspect,
+                timestamp: Date.now()
+            });
+
+            finish(false);
+        }
+
         async function handleVideoGenerate(prompt, status, genBtn) {
+            if (currentVideoModel === 'OMNI') {
+                return handleOmniGenerate(prompt, status);
+            }
             const modelLabel = currentVideoModel === 'FAST' ? 'Veo 3.1 Fast' : 'Veo 3.1';
             const modelId = VIDEO_MODELS[currentVideoModel];
             const aspect = document.getElementById('videoAspectSelect').value;
