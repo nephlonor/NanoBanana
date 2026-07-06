@@ -1225,10 +1225,12 @@
                 ? nearestVideoAspect(ref.w / ref.h)
                 : document.getElementById('videoAspectSelect').value;
 
+            // iOS reports .mov as video/quicktime; Omni wants video/mov (same bytes).
+            const normalizeMime = (mime) => mime === 'video/quicktime' ? 'video/mov' : mime;
             const mediaItems = uploadedImages.map(m => ({
                 type: m.isVideo ? 'video' : 'image',
                 data: m.data,
-                mime_type: m.mime
+                mime_type: normalizeMime(m.mime)
             }));
 
             const body = {
