@@ -1373,11 +1373,19 @@
                 status.textContent = 'Starting Omni Flash (Gemini API / paid)…';
             }
 
-            const resp = await fetch(reqUrl, {
-                method: 'POST',
-                headers: reqHeaders,
-                body: JSON.stringify(body)
-            });
+            const payload = JSON.stringify(body);
+            const approxMb = Math.round(payload.length / 1048576 * 10) / 10;
+            let resp;
+            try {
+                resp = await fetch(reqUrl, { method: 'POST', headers: reqHeaders, body: payload });
+            } catch (netErr) {
+                console.error('Omni network error:', netErr, 'payload ~', approxMb, 'MB');
+                const sizeHint = approxMb >= 8
+                    ? ` The request is large (~${approxMb} MB) — a big reference clip can fail to upload on mobile; try a shorter/smaller reference.`
+                    : '';
+                const tokenHint = omniToken ? ' If it has been ~1h, refresh the access token.' : '';
+                throw new Error(`Network error reaching Omni.${sizeHint}${tokenHint} Check connection and retry.`);
+            }
             let text = await resp.text();
             let data = null;
             try { data = JSON.parse(text); } catch (_) {}
