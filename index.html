@@ -1092,23 +1092,38 @@
         const OMNI_MODEL = 'gemini-omni-flash-preview';
         const OMNI_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/interactions';
 
-        // Interactions API response shape is undocumented — search the JSON for a video.
+        // Interactions API returns steps[].content[] items like
+        //   { type:"video", mime_type:"video/mp4", data:"<base64>" }  (or a uri).
+        // Search the JSON recursively for the first such video.
         function findVideoInObject(obj, depth) {
             depth = depth || 0;
-            if (!obj || depth > 7) return null;
+            if (!obj || depth > 8) return null;
             if (Array.isArray(obj)) {
                 for (const it of obj) { const r = findVideoInObject(it, depth + 1); if (r) return r; }
                 return null;
             }
             if (typeof obj !== 'object') return null;
-            if (obj.video && (obj.video.uri || obj.video.bytesBase64Encoded || obj.video.data)) {
-                return { uri: obj.video.uri, base64: obj.video.bytesBase64Encoded || obj.video.data, mime: obj.video.mimeType || 'video/mp4' };
+
+            // Interactions API content item: { type:"video", mime_type, data|uri }
+            if (obj.type === 'video' && (obj.data || obj.uri || obj.bytesBase64Encoded)) {
+                return {
+                    base64: obj.data || obj.bytesBase64Encoded,
+                    uri: obj.uri,
+                    mime: obj.mime_type || obj.mimeType || 'video/mp4'
+                };
             }
-            if (obj.mimeType && /video/i.test(obj.mimeType) && (obj.data || obj.bytesBase64Encoded)) {
-                return { base64: obj.data || obj.bytesBase64Encoded, mime: obj.mimeType };
+            // Veo / nested { video: { uri|bytesBase64Encoded|data } }
+            if (obj.video && (obj.video.uri || obj.video.bytesBase64Encoded || obj.video.data)) {
+                return { uri: obj.video.uri, base64: obj.video.bytesBase64Encoded || obj.video.data, mime: obj.video.mimeType || obj.video.mime_type || 'video/mp4' };
+            }
+            // Generic mime-typed blob (camel or snake case)
+            const mime = obj.mime_type || obj.mimeType;
+            if (mime && /video/i.test(mime) && (obj.data || obj.bytesBase64Encoded)) {
+                return { base64: obj.data || obj.bytesBase64Encoded, mime };
             }
             const anyUri = obj.uri || obj.videoUri || obj.fileUri;
             if (anyUri && /\.mp4|video/i.test(anyUri)) return { uri: anyUri, mime: 'video/mp4' };
+
             for (const k in obj) { const r = findVideoInObject(obj[k], depth + 1); if (r) return r; }
             return null;
         }
