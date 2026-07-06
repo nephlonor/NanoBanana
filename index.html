@@ -827,9 +827,29 @@
                     req.onerror = () => resolve([]);
                 });
                 db.close();
-                return items.sort((a, b) => b.timestamp - a.timestamp);
+                items.sort((a, b) => b.timestamp - a.timestamp);
+                // Drop the heavy video base64 from the in-memory list so the
+                // grid doesn't retain tens of MB per clip; fetched by id on tap.
+                items.forEach((it) => { if (it.type === 'video') it.dataUrl = null; });
+                return items;
             } catch (e) {
                 return [];
+            }
+        }
+
+        async function getHistoryItem(id) {
+            try {
+                const db = await openHistoryDb();
+                const rec = await new Promise((resolve) => {
+                    const tx = db.transaction(HISTORY_STORE, 'readonly');
+                    const req = tx.objectStore(HISTORY_STORE).get(id);
+                    req.onsuccess = () => resolve(req.result || null);
+                    req.onerror = () => resolve(null);
+                });
+                db.close();
+                return rec;
+            } catch (e) {
+                return null;
             }
         }
 
@@ -872,18 +892,24 @@
                 const imgWrap = document.createElement('div');
                 imgWrap.className = 'aspect-square bg-black cursor-pointer relative';
                 if (isVideo) {
-                    const vid = document.createElement('video');
-                    vid.src = item.dataUrl;
-                    vid.muted = true;
-                    vid.playsInline = true;
-                    vid.preload = 'metadata';
-                    vid.className = 'w-full h-full object-cover pointer-events-none';
-                    imgWrap.appendChild(vid);
+                    // Do NOT load the video here. Rendering many multi-MB
+                    // data-URL <video> elements at once exhausts iOS Safari's
+                    // memory and crashes the tab. Show a placeholder tile and
+                    // load the actual video only when tapped (one at a time).
+                    imgWrap.className = 'aspect-square cursor-pointer relative flex items-center justify-center';
+                    imgWrap.style.background = 'linear-gradient(135deg,#1f2937,#0b0f0e)';
                     const badge = document.createElement('div');
                     badge.textContent = '▶';
-                    badge.className = 'absolute inset-0 flex items-center justify-center text-white text-3xl drop-shadow-lg opacity-80 pointer-events-none';
+                    badge.className = 'text-white text-3xl opacity-80 pointer-events-none';
                     imgWrap.appendChild(badge);
-                    imgWrap.addEventListener('click', () => enlarge(item.dataUrl, 'video'));
+                    const tag = document.createElement('div');
+                    tag.textContent = 'video';
+                    tag.className = 'absolute bottom-1 right-2 text-[9px] text-gray-400 pointer-events-none';
+                    imgWrap.appendChild(tag);
+                    imgWrap.addEventListener('click', async () => {
+                        const rec = await getHistoryItem(item.id);
+                        if (rec && rec.dataUrl) enlarge(rec.dataUrl, 'video');
+                    });
                 } else {
                     const img = document.createElement('img');
                     img.src = item.dataUrl;
@@ -929,9 +955,10 @@
                     const saveBtn = document.createElement('button');
                     saveBtn.textContent = '⬇ Save to Photos';
                     saveBtn.className = 'mt-1 self-start text-[10px] text-gray-400 hover:text-teal-400 transition active:scale-95';
-                    saveBtn.addEventListener('click', (e) => {
+                    saveBtn.addEventListener('click', async (e) => {
                         e.stopPropagation();
-                        saveVideo(item.dataUrl, saveBtn);
+                        const rec = await getHistoryItem(item.id);
+                        if (rec && rec.dataUrl) saveVideo(rec.dataUrl, saveBtn);
                     });
                     meta.appendChild(saveBtn);
                 }
