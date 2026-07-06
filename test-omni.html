@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Omni Flash Test</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { font-family: -apple-system, sans-serif; background: #0a0f0e; color: #f0f0f0; }
+        .bg-accent { background-image: linear-gradient(135deg, #0d9488 0%, #059669 100%); }
+        pre { white-space: pre-wrap; word-break: break-word; }
+    </style>
+</head>
+<body class="p-4 flex flex-col items-center">
+    <div class="w-full max-w-xl bg-[#1a1f1e] p-6 rounded-2xl mt-6">
+        <h1 class="text-xl font-bold mb-1">Omni Flash Reachability Test</h1>
+        <p class="text-xs text-gray-500 mb-4">Throwaway page — checks whether <span class="font-mono">gemini-omni-flash-preview</span> works with your key on the Gemini Developer Interactions API.</p>
+
+        <label class="block text-[11px] text-gray-400 mb-1">API key (auto-filled from the app if you saved one there)</label>
+        <input id="key" type="password" placeholder="Paste your key"
+            class="w-full bg-[#2c302f] p-3 rounded-lg border-none text-sm mb-3">
+
+        <button id="run" onclick="runTest()" class="w-full py-3 bg-accent rounded-xl font-bold active:scale-95 transition mb-4">
+            Test Omni Flash
+        </button>
+
+        <div id="verdict" class="text-sm font-semibold mb-2"></div>
+        <pre id="out" class="text-[11px] text-gray-400 bg-black/40 p-3 rounded-lg max-h-[50vh] overflow-auto"></pre>
+    </div>
+
+    <script>
+        const KEY_STORAGE = 'nanobanana_api_key';
+        // Prefill from the app's saved key.
+        try {
+            const saved = localStorage.getItem(KEY_STORAGE);
+            if (saved) document.getElementById('key').value = saved;
+        } catch (_) {}
+
+        function setVerdict(text, color) {
+            const v = document.getElementById('verdict');
+            v.textContent = text;
+            v.style.color = color;
+        }
+
+        async function runTest() {
+            const key = document.getElementById('key').value.trim();
+            const btn = document.getElementById('run');
+            const out = document.getElementById('out');
+            if (!key) { setVerdict('Enter a key first.', '#f87171'); return; }
+
+            btn.disabled = true;
+            btn.textContent = 'Testing…';
+            setVerdict('Contacting Interactions API…', '#a0a0a0');
+            out.textContent = '';
+
+            const url = `https://generativelanguage.googleapis.com/v1beta/interactions?key=${encodeURIComponent(key)}`;
+            const body = {
+                model: 'gemini-omni-flash-preview',
+                input: 'A banana spinning on a table',
+                response_format: { type: 'video', aspect_ratio: '9:16' }
+            };
+
+            try {
+                const resp = await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+                const status = resp.status;
+                let text = await resp.text();
+                let pretty = text;
+                try { pretty = JSON.stringify(JSON.parse(text), null, 2); } catch (_) {}
+                out.textContent = `HTTP ${status}\n\n${pretty}`;
+
+                const lower = text.toLowerCase();
+                if (resp.ok) {
+                    setVerdict('✓ WORKS — your key is authorized. Omni Flash can be added.', '#5eead4');
+                } else if (status === 403 || lower.includes('permission_denied') || lower.includes('api key not valid') || lower.includes('api_key_invalid')) {
+                    setVerdict('✗ Key not valid on the Developer API. You need a separate key from aistudio.google.com.', '#f87171');
+                } else if (status === 404 || lower.includes('not found')) {
+                    setVerdict('✗ Model/endpoint not found for this key (not enabled yet).', '#fbbf24');
+                } else if (status === 400) {
+                    setVerdict('⚠ Auth OK but request rejected (400). Endpoint reachable — request shape may need tweaking. See body.', '#fbbf24');
+                } else {
+                    setVerdict(`⚠ HTTP ${status} — see response body below.`, '#fbbf24');
+                }
+            } catch (err) {
+                out.textContent = String(err && err.message || err);
+                setVerdict('✗ Network / CORS error — see below.', '#f87171');
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Test Omni Flash';
+            }
+        }
+    </script>
+</body>
+</html>
