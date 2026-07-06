@@ -1143,7 +1143,10 @@
             try { data = JSON.parse(text); } catch (_) {}
             if (!resp.ok) {
                 const msg = (data && data.error && data.error.message) || `HTTP ${resp.status}`;
-                throw new Error(`Omni: ${msg}`);
+                const status_ = (data && data.error && data.error.status) ? ` [${data.error.status}]` : '';
+                console.error('Omni error body:', text);
+                alert(`Omni Flash failed (HTTP ${resp.status})${status_}.\n\nReason:\n${msg}\n\nRaw:\n${text.slice(0, 600)}`);
+                throw new Error(`Omni: HTTP ${resp.status} — ${msg}`);
             }
 
             // Poll if the call returned a long-running operation.
