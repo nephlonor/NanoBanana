@@ -100,12 +100,19 @@
                     <option value="asia-southeast1">asia-southeast1 (Singapore)</option>
                     <option value="asia-northeast1">asia-northeast1 (Tokyo)</option>
                 </select>
-                <label class="block text-[10px] text-gray-400 mt-2 mb-1">Omni proxy URL (optional — routes Omni to Vertex / free credits)</label>
-                <input id="proxyUrlInput" type="url" autocomplete="off" placeholder="https://…run.app"
-                    class="w-full bg-secondary p-2 rounded-lg border-none focus:ring-2 focus:ring-teal-400 text-sm mb-2">
-                <label class="block text-[10px] text-gray-400 mb-1">Omni proxy secret</label>
-                <input id="proxySecretInput" type="password" autocomplete="off" placeholder="Shared secret"
-                    class="w-full bg-secondary p-2 rounded-lg border-none focus:ring-2 focus:ring-teal-400 text-sm mb-2">
+                <label class="block text-[10px] text-gray-400 mt-2 mb-1">Omni access token — Vertex / free credits (~1h, from OAuth Playground)</label>
+                <input id="omniTokenInput" type="password" autocomplete="off" placeholder="ya29.… (paste access token)"
+                    class="w-full bg-secondary p-2 rounded-lg border-none focus:ring-2 focus:ring-teal-400 text-sm mb-1">
+                <a href="https://developers.google.com/oauthplayground/#step1&scopes=https%3A//www.googleapis.com/auth/cloud-platform" target="_blank" rel="noopener" class="block text-[10px] text-teal-400 mb-2 underline">→ Get a token (OAuth Playground)</a>
+                <details class="mb-2">
+                    <summary class="text-[10px] text-gray-500 cursor-pointer">Advanced: Cloud Run proxy instead of token</summary>
+                    <label class="block text-[10px] text-gray-400 mt-2 mb-1">Omni proxy URL</label>
+                    <input id="proxyUrlInput" type="url" autocomplete="off" placeholder="https://…run.app"
+                        class="w-full bg-secondary p-2 rounded-lg border-none focus:ring-2 focus:ring-teal-400 text-sm mb-2">
+                    <label class="block text-[10px] text-gray-400 mb-1">Omni proxy secret</label>
+                    <input id="proxySecretInput" type="password" autocomplete="off" placeholder="Shared secret"
+                        class="w-full bg-secondary p-2 rounded-lg border-none focus:ring-2 focus:ring-teal-400 text-sm mb-2">
+                </details>
                 <div class="flex gap-2 mt-2">
                     <button onclick="saveKey()" class="flex-1 py-2 bg-accent rounded-lg text-sm font-bold active:scale-95 transition">Save</button>
                     <button onclick="clearKey()" class="flex-1 py-2 bg-secondary rounded-lg text-sm font-bold active:scale-95 transition">Clear</button>
@@ -245,6 +252,7 @@
         const REGION_STORAGE = 'nanobanana_region';
         const PROXY_URL_STORAGE = 'nanobanana_proxy_url';
         const PROXY_SECRET_STORAGE = 'nanobanana_proxy_secret';
+        const OMNI_TOKEN_STORAGE = 'nanobanana_omni_token';
         const VERTEX_PROJECT = 'fhnw-gemini';
         const DEFAULT_REGION = 'us-central1';
 
@@ -266,6 +274,7 @@
         function getRegion() { return localStorage.getItem(REGION_STORAGE) || DEFAULT_REGION; }
         function getProxyUrl() { return (localStorage.getItem(PROXY_URL_STORAGE) || '').trim(); }
         function getProxySecret() { return localStorage.getItem(PROXY_SECRET_STORAGE) || ''; }
+        function getOmniToken() { return (localStorage.getItem(OMNI_TOKEN_STORAGE) || '').trim(); }
 
         function vertexEndpoint(modelId, verb) {
             const region = getRegion();
@@ -289,10 +298,12 @@
             if (regionSel) regionSel.value = region;
             const proxyUrlIn = document.getElementById('proxyUrlInput');
             const proxySecretIn = document.getElementById('proxySecretInput');
+            const omniTokenIn = document.getElementById('omniTokenInput');
             if (proxyUrlIn) proxyUrlIn.value = getProxyUrl();
             if (proxySecretIn) proxySecretIn.value = getProxySecret();
+            if (omniTokenIn) omniTokenIn.value = getOmniToken();
             if (k) {
-                const omni = getProxyUrl() ? ' · omni:proxy' : '';
+                const omni = getOmniToken() ? ' · omni:token' : (getProxyUrl() ? ' · omni:proxy' : '');
                 status.textContent = `API Key: set (…${k.slice(-4)}) · ${region}${omni}`;
                 details.open = false;
                 details.classList.add('mt-2');
@@ -317,8 +328,10 @@
             }
             const purl = document.getElementById('proxyUrlInput').value.trim();
             const psec = document.getElementById('proxySecretInput').value;
+            const otok = document.getElementById('omniTokenInput').value.trim();
             if (purl) localStorage.setItem(PROXY_URL_STORAGE, purl); else localStorage.removeItem(PROXY_URL_STORAGE);
             if (psec) localStorage.setItem(PROXY_SECRET_STORAGE, psec); else localStorage.removeItem(PROXY_SECRET_STORAGE);
+            if (otok) localStorage.setItem(OMNI_TOKEN_STORAGE, otok); else localStorage.removeItem(OMNI_TOKEN_STORAGE);
             updateKeyStatus();
         }
 
@@ -327,6 +340,7 @@
             localStorage.removeItem(REGION_STORAGE);
             localStorage.removeItem(PROXY_URL_STORAGE);
             localStorage.removeItem(PROXY_SECRET_STORAGE);
+            localStorage.removeItem(OMNI_TOKEN_STORAGE);
             updateKeyStatus();
         }
 
@@ -1222,11 +1236,22 @@
 
             beginCharge(PRICING.video.OMNI || 0);
 
-            // With a proxy configured → Vertex Interactions (free credits).
-            // Without → Gemini Developer API directly (works, but paid credits).
+            // Route priority:
+            //   1. Access token  → Vertex Interactions with Bearer   (free credits)
+            //   2. Proxy URL     → Cloud Run proxy → Vertex           (free credits)
+            //   3. Neither       → Gemini Developer API with key      (works, paid)
+            const omniToken = getOmniToken();
             const proxyUrl = getProxyUrl();
             let reqUrl, reqHeaders;
-            if (proxyUrl) {
+            if (omniToken) {
+                reqUrl = `https://aiplatform.googleapis.com/v1beta1/projects/${VERTEX_PROJECT}/locations/${getRegion()}/interactions`;
+                reqHeaders = {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${omniToken}`,
+                    'x-goog-user-project': VERTEX_PROJECT
+                };
+                status.textContent = 'Starting Omni Flash (Vertex / free)…';
+            } else if (proxyUrl) {
                 reqUrl = proxyUrl;
                 reqHeaders = { 'Content-Type': 'application/json' };
                 const secret = getProxySecret();
