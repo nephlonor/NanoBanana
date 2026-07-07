@@ -367,6 +367,7 @@
         //   PRO (gemini-3-pro-image):   2K $0.134, 4K $0.24  (img output $120/M tok)
         //   FLASH (gemini-3.1-flash):   2K ~$0.067, 4K ~$0.12 (img output $60/M tok)
         //   Veo 3.1 standard: $0.40/s   Veo 3.1 fast: $0.15/s
+        //   Omni Flash: flat ~0.85 CHF per generation (observed deduction).
         const PRICING = {
             image: {
                 PRO:   { '2K': 0.11, '4K': 0.19 },
@@ -375,7 +376,7 @@
             video: {
                 QUALITY: 0.32,
                 FAST:    0.12,
-                OMNI:    0.12
+                OMNI:    0.85
             }
         };
 
