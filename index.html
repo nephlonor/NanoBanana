@@ -62,6 +62,13 @@
         .credit-bar-normal { background-image: linear-gradient(135deg, #14b8a6 0%, #10b981 100%); }
         .credit-bar-warn   { background-image: linear-gradient(135deg, #f59e0b 0%, #d97706 100%); }
         .credit-bar-danger { background-image: linear-gradient(135deg, #ef4444 0%, #b91c1c 100%); }
+
+        .slot-ring {
+            width: 40px; height: 40px; border-radius: 50%;
+            border: 3px solid rgba(20,184,166,0.25); border-top-color: #14b8a6;
+            animation: spin 0.9s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
     </style>
 </head>
 <body class="p-4 flex flex-col items-center">
@@ -180,12 +187,8 @@
             GENERATE
         </button>
 
-        <div class="relative w-full aspect-square bg-black rounded-xl overflow-hidden border border-gray-800">
-            <img id="outputImg" class="w-full h-full object-contain" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7">
-            <video id="outputVid" class="w-full h-full object-contain hidden" controls playsinline></video>
-        </div>
+        <div id="outputStack" class="w-full flex flex-col gap-3"></div>
         <p id="statusMsg" class="text-center text-xs mt-3 text-gray-500 font-medium">Ready</p>
-        <button id="downloadBtn" onclick="saveVideo()" class="hidden mt-3 w-full py-2 bg-accent rounded-lg text-sm font-bold active:scale-95 transition">⬇  Save to Photos</button>
 
         <details id="historyDetails" class="mt-4 bg-input rounded-xl border border-gray-700">
             <summary class="px-4 py-3 cursor-pointer text-sm font-semibold select-none flex justify-between items-center">
@@ -396,21 +399,19 @@
             setCreditUsed(getCreditUsed() + amount);
         }
 
-        // Charge-on-send, refund-on-failure. pendingCharge holds what was
-        // provisionally deducted for the in-flight generation.
-        let pendingCharge = 0;
-        function beginCharge(amount) {
-            pendingCharge = amount || 0;
-            if (pendingCharge > 0) setCreditUsed(getCreditUsed() + pendingCharge);
+        // Per-generation charging (concurrency-safe — each generation tracks
+        // its own charged amount in a local variable). Charge at send, adjust
+        // to the actual cost on success, refund on failure.
+        function chargeCredit(amount) {
+            const a = amount || 0;
+            if (a > 0) setCreditUsed(getCreditUsed() + a);
+            return a;
         }
-        function settleCharge(actualAmount) {
-            const diff = (actualAmount || 0) - pendingCharge;
-            if (diff) setCreditUsed(getCreditUsed() + diff);
-            pendingCharge = 0;
+        function adjustCredit(delta) {
+            if (delta) setCreditUsed(getCreditUsed() + delta);
         }
-        function refundCharge() {
-            if (pendingCharge > 0) setCreditUsed(getCreditUsed() - pendingCharge);
-            pendingCharge = 0;
+        function refundCredit(amount) {
+            if (amount > 0) setCreditUsed(getCreditUsed() - amount);
         }
         function priceForImage(model, res) {
             return (PRICING.image[model] && PRICING.image[model][res]) || 0;
@@ -723,9 +724,9 @@
         }
 
         async function saveVideo(srcArg, btnEl) {
-            const src = srcArg || document.getElementById('outputVid').getAttribute('src');
+            const src = srcArg;
             if (!src) return;
-            const btn = btnEl || document.getElementById('downloadBtn');
+            const btn = btnEl || null;
             const orig = btn ? btn.textContent : null;
             if (btn) { btn.disabled = true; btn.textContent = 'Preparing…'; }
             try {
@@ -1226,15 +1227,15 @@
 
         ensureServiceWorker().then(() => syncFromServiceWorker());
 
-        function buildBody(modelKey, parts) {
+        function buildBody(modelKey, parts, res, ratio) {
             const modalities = modelKey === 'FLASH' ? ['IMAGE'] : ['TEXT', 'IMAGE'];
             return {
                 contents: [{ role: 'user', parts }],
                 generationConfig: {
                     responseModalities: modalities,
                     imageConfig: {
-                        imageSize: currentRes,
-                        aspectRatio: ratioSelect.value
+                        imageSize: res || currentRes,
+                        aspectRatio: ratio || ratioSelect.value
                     }
                 }
             };
@@ -1275,8 +1276,8 @@
             return swPost(url, {}, body, meta);
         }
 
-        async function attemptGenerate(modelKey, parts, meta) {
-            const data = await callApi(modelKey, buildBody(modelKey, parts), meta);
+        async function attemptGenerate(modelKey, parts, meta, opts) {
+            const data = await callApi(modelKey, buildBody(modelKey, parts, opts && opts.res, opts && opts.ratio), meta);
             if (!data.candidates || !data.candidates[0]) throw new Error("No candidates returned (possible safety block)");
 
             const responseParts = data.candidates[0].content && data.candidates[0].content.parts;
@@ -1306,14 +1307,14 @@
             return data.name;
         }
 
-        async function pollVideoOperation(opName, statusEl, startMs) {
+        async function pollVideoOperation(opName, onStatus, startMs) {
             while (true) {
                 if (Date.now() - startMs > VIDEO_MAX_WAIT_MS) {
                     throw new Error(`Timed out after ${Math.round(VIDEO_MAX_WAIT_MS/60000)} min`);
                 }
                 await sleep(VIDEO_POLL_INTERVAL_MS);
                 const elapsed = Math.floor((Date.now() - startMs) / 1000);
-                statusEl.textContent = `Rendering video… ${elapsed}s (safe to background)`;
+                if (onStatus) onStatus(`Rendering video… ${elapsed}s (safe to background)`);
                 const resp = await fetch(withKey(vertexOperationUrl(opName)));
                 if (!resp.ok) {
                     let msg = `HTTP ${resp.status}`;
@@ -1405,91 +1406,189 @@
             return null;
         }
 
-        async function handleOmniGenerate(prompt, status) {
+        // ---- Concurrent generation engine ----------------------------------
+        // Generate never blocks: each press snapshots the current settings,
+        // adds a result slot on top of the output stack, and runs independently.
+
+        let activeGenerations = 0;
+        function updateGlobalStatus() {
+            const s = document.getElementById('statusMsg');
+            s.style.color = '#a0a0a0';
+            s.textContent = activeGenerations > 0 ? `${activeGenerations} generating…` : 'Ready';
+        }
+        function genStarted() { activeGenerations++; if (activeGenerations === 1) startKeepAlive(); updateGlobalStatus(); }
+        function genEnded() { activeGenerations = Math.max(0, activeGenerations - 1); if (activeGenerations === 0) stopKeepAlive(); updateGlobalStatus(); }
+
+        // Remove settled (done) slots so a new press leaves only the newest
+        // result(s) visible; everything stays available under History.
+        function pruneCompletedSlots() {
+            document.querySelectorAll('#outputStack .output-slot[data-done="1"]').forEach(el => el.remove());
+        }
+
+        function createSlot() {
+            const stack = document.getElementById('outputStack');
+            const slot = document.createElement('div');
+            slot.className = 'output-slot w-full';
+            slot.dataset.done = '0';
+            const box = document.createElement('div');
+            box.className = 'relative w-full aspect-square bg-black rounded-xl overflow-hidden border border-gray-800 flex items-center justify-center';
+            const media = document.createElement('div');
+            media.className = 'slot-media w-full h-full flex items-center justify-center';
+            const spin = document.createElement('div');
+            spin.className = 'absolute inset-0 flex flex-col items-center justify-center gap-3 pointer-events-none';
+            spin.innerHTML = '<div class="slot-ring"></div><div class="slot-status text-[11px] text-gray-400 px-4 text-center"></div>';
+            box.appendChild(media); box.appendChild(spin);
+            slot.appendChild(box);
+            stack.insertBefore(slot, stack.firstChild); // newest on top
+            const statusEl = spin.querySelector('.slot-status');
+            return {
+                el: slot,
+                setStatus(t) { statusEl.textContent = t; },
+                setImage(url) {
+                    spin.remove(); media.innerHTML = '';
+                    const img = document.createElement('img');
+                    img.src = url; img.className = 'w-full h-full object-contain';
+                    img.style.cursor = 'zoom-in';
+                    img.addEventListener('click', () => enlarge(url, 'image'));
+                    media.appendChild(img);
+                    slot.dataset.done = '1';
+                },
+                setVideo(url) {
+                    spin.remove(); media.innerHTML = '';
+                    const vid = document.createElement('video');
+                    vid.src = url; vid.controls = true; vid.playsInline = true;
+                    vid.className = 'w-full h-full object-contain';
+                    media.appendChild(vid);
+                    const save = document.createElement('button');
+                    save.textContent = '⬇ Save to Photos';
+                    save.className = 'mt-2 w-full py-2 bg-accent rounded-lg text-sm font-bold active:scale-95 transition';
+                    save.addEventListener('click', () => saveVideo(url, save));
+                    slot.appendChild(save);
+                    vid.play().catch(() => {});
+                    slot.dataset.done = '1';
+                },
+                setError(msg) {
+                    spin.remove();
+                    const d = document.createElement('div');
+                    d.className = 'text-center text-[11px] text-red-400 px-3 py-6';
+                    d.textContent = msg;
+                    media.innerHTML = '';
+                    media.appendChild(d);
+                    slot.dataset.done = '1';
+                }
+            };
+        }
+
+        function snapshotOptions() {
+            return {
+                mode: currentMode,
+                imageModel: currentModel,
+                res: currentRes,
+                ratio: ratioSelect.value,
+                videoModel: currentVideoModel,
+                videoAspect: document.getElementById('videoAspectSelect').value,
+                videoDuration: parseInt(document.getElementById('videoDurationSelect').value, 10),
+                uploads: uploadedImages.map(m => ({ data: m.data, mime: m.mime, isVideo: m.isVideo, w: m.w, h: m.h }))
+            };
+        }
+
+        async function generateImage(prompt, opts, slot) {
+            slot.setStatus(`Crafting with ${opts.imageModel}… (safe to background)`);
+            const parts = opts.uploads.map(u => ({ inlineData: { mimeType: u.mime, data: u.data } }));
+            parts.push({ text: prompt });
+            const imgMeta = (model) => ({ type: 'image', prompt, model, res: opts.res, ratio: opts.ratio, timestamp: Date.now() });
+            let imagePart, usedModel = opts.imageModel;
+            try {
+                imagePart = await attemptGenerate(opts.imageModel, parts, imgMeta(opts.imageModel), opts);
+            } catch (firstErr) {
+                console.error(`First attempt (${opts.imageModel}) failed:`, firstErr);
+                slot.setStatus(`${opts.imageModel} failed — retrying FLASH…`);
+                await sleep(RETRY_DELAY_MS);
+                imagePart = await attemptGenerate('FLASH', parts, imgMeta('FLASH'), opts);
+                usedModel = 'FLASH';
+            }
+            const b64 = imagePart.inlineData.data;
+            const mime = imagePart.inlineData.mimeType || 'image/png';
+            return { type: 'image', dataUrl: `data:${mime};base64,${b64}`, model: usedModel, res: opts.res, ratio: opts.ratio, cost: priceForImage(usedModel, opts.res) };
+        }
+
+        async function generateVeo(prompt, opts, slot) {
+            const modelLabel = opts.videoModel === 'FAST' ? 'Veo 3.1 Fast' : 'Veo 3.1';
+            const modelId = VIDEO_MODELS[opts.videoModel];
+            const aspect = opts.videoAspect;
+            const duration = opts.videoDuration;
+            const instance = { prompt };
+            if (opts.uploads.length > 0) {
+                instance.image = { bytesBase64Encoded: opts.uploads[0].data, mimeType: opts.uploads[0].mime };
+            }
+            const body = { instances: [instance], parameters: { aspectRatio: aspect, durationSeconds: duration, personGeneration: 'allow_adult' } };
+            slot.setStatus(`Starting ${modelLabel}…`);
+            const opName = await startVideoOperation(modelId, body);
+            const startMs = Date.now();
+            const response = await pollVideoOperation(opName, (t) => slot.setStatus(t), startMs);
+            const result = extractVideoResult(response);
+            if (!result) throw new Error('No video in response');
+            let dataUrl;
+            if (result.base64) dataUrl = `data:${result.mime};base64,${result.base64}`;
+            else { slot.setStatus('Downloading video…'); dataUrl = await fetchVideoAsDataUrl(result.uri); }
+            return { type: 'video', dataUrl, model: modelLabel, res: `${duration}s`, ratio: aspect, cost: priceForVideo(opts.videoModel, duration) };
+        }
+
+        async function generateOmni(prompt, opts, slot) {
             const key = getKey();
-            const hasMedia = uploadedImages.length > 0;
-            const hasVideoRef = uploadedImages.some(m => m.isVideo);
+            const uploads = opts.uploads;
+            const hasMedia = uploads.length > 0;
+            const hasVideoRef = uploads.some(m => m.isVideo);
+            const ref = uploads[0];
+            const aspect = (ref && ref.w && ref.h) ? nearestVideoAspect(ref.w / ref.h) : opts.videoAspect;
 
-            // Always match the first reference's aspect ratio; fall back to the
-            // dropdown only when there's no reference (text-to-video).
-            const ref = uploadedImages[0];
-            const aspect = (ref && ref.w && ref.h)
-                ? nearestVideoAspect(ref.w / ref.h)
-                : document.getElementById('videoAspectSelect').value;
-
-            // iOS reports .mov as video/quicktime; Omni wants video/mov (same bytes).
             const normalizeMime = (mime) => mime === 'video/quicktime' ? 'video/mov' : mime;
-            const mediaItems = uploadedImages.map(m => ({
-                type: m.isVideo ? 'video' : 'image',
-                data: m.data,
-                mime_type: normalizeMime(m.mime)
-            }));
-
+            const mediaItems = uploads.map(m => ({ type: m.isVideo ? 'video' : 'image', data: m.data, mime_type: normalizeMime(m.mime) }));
             const body = {
                 model: OMNI_MODEL,
                 input: hasMedia ? [...mediaItems, { type: 'text', text: prompt }] : prompt,
                 response_format: { type: 'video', aspect_ratio: aspect }
             };
-            // Image-only → image_to_video. With a video reference, let the model
-            // infer (edit / video-to-video) from the prompt.
-            if (hasMedia && !hasVideoRef) {
-                body.generation_config = { video_config: { task: 'image_to_video' } };
-            }
+            if (hasMedia && !hasVideoRef) body.generation_config = { video_config: { task: 'image_to_video' } };
 
-            beginCharge(PRICING.video.OMNI || 0);
-
-            // Route priority:
-            //   1. Access token  → Vertex Interactions with Bearer   (free credits)
-            //   2. Proxy URL     → Cloud Run proxy → Vertex           (free credits)
-            //   3. Neither       → Gemini Developer API with key      (works, paid)
             const omniToken = getOmniToken();
             const proxyUrl = getProxyUrl();
             let reqUrl, reqHeaders;
             if (omniToken) {
                 reqUrl = `https://aiplatform.googleapis.com/v1beta1/projects/${VERTEX_PROJECT}/locations/${getRegion()}/interactions`;
-                reqHeaders = {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${omniToken}`,
-                    'x-goog-user-project': VERTEX_PROJECT
-                };
-                status.textContent = 'Starting Omni Flash (Vertex / free)…';
+                reqHeaders = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${omniToken}`, 'x-goog-user-project': VERTEX_PROJECT };
             } else if (proxyUrl) {
                 reqUrl = proxyUrl;
                 reqHeaders = { 'Content-Type': 'application/json' };
                 const secret = getProxySecret();
                 if (secret) reqHeaders['X-Proxy-Secret'] = secret;
                 body.__region = getRegion();
-                status.textContent = 'Starting Omni Flash (Vertex / free)…';
             } else {
                 reqUrl = `https://generativelanguage.googleapis.com/v1beta/interactions?key=${encodeURIComponent(key)}`;
                 reqHeaders = { 'Content-Type': 'application/json' };
-                status.textContent = 'Starting Omni Flash (Gemini API / paid)…';
             }
 
             const approxMb = Math.round(JSON.stringify(body).length / 1048576 * 10) / 10;
-            status.textContent = 'Rendering Omni Flash… (safe to background)';
-
-            // Route through the service worker so the ~30s request survives the
-            // page being backgrounded/suspended by iOS.
+            slot.setStatus('Rendering Omni Flash… (safe to background)');
             const omniMeta = { type: 'video', prompt, model: 'Omni Flash', res: 'omni', ratio: aspect, timestamp: Date.now() };
+
             let data;
             try {
                 data = await swPost(reqUrl, reqHeaders, body, omniMeta);
             } catch (err) {
                 const m = (err && err.message) || 'failed';
+                const isAuth = /401|unauthenticat|invalid authentication|access token|expired|permission_denied/i.test(m);
+                if (isAuth && omniToken) throw new Error('Access token expired — get a fresh token from the OAuth Playground link in the key panel and re-paste it.');
                 const isNet = /load failed|network|failed to fetch/i.test(m);
-                const sizeHint = (isNet && approxMb >= 8)
-                    ? ` Request is large (~${approxMb} MB) — a big reference clip can fail to upload; use a shorter one.` : '';
-                const tokenHint = (isNet && omniToken) ? ' If it has been ~1h, refresh the token.' : '';
-                throw new Error(`Omni: ${m}${sizeHint}${tokenHint}`);
+                const sizeHint = (isNet && approxMb >= 8) ? ` Request is large (~${approxMb} MB) — use a shorter reference clip.` : '';
+                throw new Error(`Omni: ${m}${sizeHint}`);
             }
 
-            // Poll only if a long-running operation came back (Omni is normally synchronous).
             const startMs = Date.now();
             while (data && data.name && data.done !== true && !findVideoInObject(data)) {
                 if (Date.now() - startMs > VIDEO_MAX_WAIT_MS) throw new Error('Omni: timed out');
                 await sleep(VIDEO_POLL_INTERVAL_MS);
-                status.textContent = `Rendering (Omni)… ${Math.floor((Date.now() - startMs) / 1000)}s (safe to background)`;
+                slot.setStatus(`Rendering (Omni)… ${Math.floor((Date.now() - startMs) / 1000)}s (safe to background)`);
                 const pr = await fetch(`https://aiplatform.googleapis.com/v1beta1/${data.name}?key=${encodeURIComponent(key)}`);
                 const pt = await pr.text();
                 try { data = JSON.parse(pt); } catch (_) {}
@@ -1497,17 +1596,13 @@
             }
 
             const result = findVideoInObject(data);
-            if (!result) {
-                console.error('Omni raw response:', data);
-                alert('Omni reached the server but returned no recognizable video.\n\nRaw:\n' + JSON.stringify(data || {}).slice(0, 1000));
-                throw new Error('Omni: no video in response');
-            }
+            if (!result) { console.error('Omni raw response:', data); throw new Error('Omni: no video in response'); }
 
             let dataUrl;
             if (result.base64) {
                 dataUrl = `data:${result.mime};base64,${result.base64}`;
             } else {
-                status.textContent = 'Downloading video…';
+                slot.setStatus('Downloading video…');
                 const dl = await fetch(`${result.uri}${result.uri.includes('?') ? '&' : '?'}key=${encodeURIComponent(key)}`);
                 if (!dl.ok) throw new Error(`Omni download HTTP ${dl.status}`);
                 const blob = await dl.blob();
@@ -1518,209 +1613,55 @@
                     r.readAsDataURL(blob);
                 });
             }
-
-            const outImg = document.getElementById('outputImg');
-            const outVid = document.getElementById('outputVid');
-            outImg.classList.add('hidden');
-            outVid.classList.remove('hidden');
-            outVid.src = dataUrl;
-            outVid.play().catch(() => {});
-            document.getElementById('downloadBtn').classList.remove('hidden');
-
-            settleCharge(PRICING.video.OMNI || 0);
-
-            addToHistory({
-                type: 'video',
-                dataUrl,
-                prompt,
-                model: 'Omni Flash',
-                res: 'omni',
-                ratio: aspect,
-                timestamp: Date.now()
-            });
-
-            finish(false);
+            return { type: 'video', dataUrl, model: 'Omni Flash', res: 'omni', ratio: aspect, cost: PRICING.video.OMNI || 0 };
         }
 
-        async function handleVideoGenerate(prompt, status, genBtn) {
-            if (currentVideoModel === 'OMNI') {
-                return handleOmniGenerate(prompt, status);
-            }
-            const modelLabel = currentVideoModel === 'FAST' ? 'Veo 3.1 Fast' : 'Veo 3.1';
-            const modelId = VIDEO_MODELS[currentVideoModel];
-            const aspect = document.getElementById('videoAspectSelect').value;
-            const duration = parseInt(document.getElementById('videoDurationSelect').value, 10);
-
-            const instance = { prompt };
-            if (uploadedImages.length > 0) {
-                instance.image = {
-                    bytesBase64Encoded: uploadedImages[0].data,
-                    mimeType: uploadedImages[0].mime
-                };
-            }
-
-            const body = {
-                instances: [instance],
-                parameters: {
-                    aspectRatio: aspect,
-                    durationSeconds: duration,
-                    personGeneration: 'allow_adult'
+        async function runGeneration(slot, prompt, opts) {
+            genStarted();
+            let charged = 0;
+            try {
+                let out;
+                if (opts.mode === 'VIDEO') {
+                    if (opts.videoModel === 'OMNI') {
+                        charged = chargeCredit(PRICING.video.OMNI || 0);
+                        out = await generateOmni(prompt, opts, slot);
+                    } else {
+                        charged = chargeCredit(priceForVideo(opts.videoModel, opts.videoDuration));
+                        out = await generateVeo(prompt, opts, slot);
+                    }
+                } else {
+                    charged = chargeCredit(priceForImage(opts.imageModel, opts.res));
+                    out = await generateImage(prompt, opts, slot);
                 }
-            };
-
-            beginCharge(priceForVideo(currentVideoModel, duration));
-
-            status.textContent = `Starting ${modelLabel}…`;
-            const opName = await startVideoOperation(modelId, body);
-
-            const startMs = Date.now();
-            const response = await pollVideoOperation(opName, status, startMs);
-
-            const result = extractVideoResult(response);
-            if (!result) {
-                console.error('No video in response:', response);
-                throw new Error('No video in response');
+                adjustCredit((out.cost || charged) - charged);
+                if (out.type === 'video') slot.setVideo(out.dataUrl); else slot.setImage(out.dataUrl);
+                addToHistory({ type: out.type, dataUrl: out.dataUrl, prompt, model: out.model, res: out.res, ratio: out.ratio, timestamp: Date.now() });
+                playRisingBing(false);
+                if (navigator.vibrate) navigator.vibrate(120);
+            } catch (err) {
+                console.error('Generation failed:', err);
+                refundCredit(charged);
+                slot.setError(`Error: ${(err && err.message) || err}`);
+                playRisingBing(true);
+                if (navigator.vibrate) navigator.vibrate(120);
+            } finally {
+                genEnded();
             }
-
-            let dataUrl;
-            if (result.base64) {
-                dataUrl = `data:${result.mime};base64,${result.base64}`;
-            } else {
-                status.textContent = 'Downloading video…';
-                dataUrl = await fetchVideoAsDataUrl(result.uri);
-            }
-
-            const outImg = document.getElementById('outputImg');
-            const outVid = document.getElementById('outputVid');
-            outImg.classList.add('hidden');
-            outVid.classList.remove('hidden');
-            outVid.src = dataUrl;
-            outVid.play().catch(() => {});
-            document.getElementById('downloadBtn').classList.remove('hidden');
-
-            settleCharge(priceForVideo(currentVideoModel, duration));
-
-            addToHistory({
-                type: 'video',
-                dataUrl,
-                prompt,
-                model: modelLabel,
-                res: `${duration}s`,
-                ratio: aspect,
-                timestamp: Date.now()
-            });
-
-            finish(false);
         }
 
-        async function handleGenerate() {
+        function handleGenerate() {
             unlockAudio();
             const prompt = document.getElementById('prompt').value;
-            const genBtn = document.getElementById('genBtn');
-            const status = document.getElementById('statusMsg');
-            const outImg = document.getElementById('outputImg');
-            const outVid = document.getElementById('outputVid');
-
-            if (!getKey()) {
+            if (!getKey() && !getOmniToken() && !getProxyUrl()) {
                 playRisingBing(true);
                 document.getElementById('keyDetails').open = true;
-                return alert("API key required. Add it in the panel.");
+                return alert('API key required. Add it in the panel.');
             }
-
-            if (!prompt) {
-                playRisingBing(true);
-                return alert("Prompt required");
-            }
-
-            genBtn.classList.add('loading-btn');
-            genBtn.textContent = "PROCESSING...";
-            status.style.color = "#a0a0a0";
-            document.getElementById('downloadBtn').classList.add('hidden');
-            startKeepAlive();
-
-            if (currentMode === 'VIDEO') {
-                try {
-                    await handleVideoGenerate(prompt, status, genBtn);
-                } catch (err) {
-                    console.error('Video generation failed:', err);
-                    finish(true, err.message);
-                }
-                return;
-            }
-
-            status.textContent = `Crafting your image with ${currentModel}… (safe to background)`;
-            outVid.pause();
-            outVid.classList.add('hidden');
-            outImg.classList.remove('hidden');
-
-            const parts = uploadedImages.map(img => ({ inlineData: { mimeType: img.mime, data: img.data } }));
-            parts.push({ text: prompt });
-
-            beginCharge(priceForImage(currentModel, currentRes));
-
-            const imgMeta = (model) => ({ type: 'image', prompt, model, res: currentRes, ratio: ratioSelect.value, timestamp: Date.now() });
-
-            let imagePart;
-            let usedModel = currentModel;
-            try {
-                imagePart = await attemptGenerate(currentModel, parts, imgMeta(currentModel));
-            } catch (firstErr) {
-                console.error(`First attempt (${currentModel}) failed:`, firstErr);
-                status.textContent = `${currentModel} failed: ${firstErr.message}. Retrying with FLASH…`;
-                await sleep(RETRY_DELAY_MS);
-                try {
-                    imagePart = await attemptGenerate('FLASH', parts, imgMeta('FLASH'));
-                    usedModel = 'FLASH';
-                } catch (secondErr) {
-                    console.error("FLASH fallback failed:", secondErr);
-                    return finish(true, `Both attempts failed. ${secondErr.message}`);
-                }
-            }
-
-            const b64 = imagePart.inlineData.data;
-            const mime = imagePart.inlineData.mimeType || 'image/png';
-            const newUrl = `data:${mime};base64,${b64}`;
-
-            settleCharge(priceForImage(usedModel, currentRes));
-
-            addToHistory({
-                type: 'image',
-                dataUrl: newUrl,
-                prompt: prompt,
-                model: usedModel,
-                res: currentRes,
-                ratio: ratioSelect.value,
-                timestamp: Date.now()
-            });
-
-            const temp = new Image();
-            temp.onload = () => {
-                outImg.src = newUrl;
-                finish(false);
-            };
-            temp.onerror = () => finish(true, "Failed to decode image");
-            temp.src = newUrl;
-        }
-
-        function finish(isError, errMsg) {
-            stopKeepAlive();
-            if (isError) refundCharge(); else pendingCharge = 0;
-            const genBtn = document.getElementById('genBtn');
-            const status = document.getElementById('statusMsg');
-
-            genBtn.classList.remove('loading-btn');
-            genBtn.textContent = "GENERATE";
-
-            if (isError) {
-                status.textContent = errMsg ? `Error: ${errMsg}` : "Error: Prompt blocked or Server busy.";
-                status.style.color = "#f87171";
-            } else {
-                status.textContent = "Generation Complete";
-                status.style.color = "#a0a0a0";
-            }
-
-            playRisingBing(isError);
-            if (navigator.vibrate) navigator.vibrate(200);
+            if (!prompt) { playRisingBing(true); return alert('Prompt required'); }
+            pruneCompletedSlots();
+            const opts = snapshotOptions();
+            const slot = createSlot();
+            runGeneration(slot, prompt, opts);
         }
     </script>
 </body>
