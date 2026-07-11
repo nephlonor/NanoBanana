@@ -13,6 +13,7 @@
     <meta name="apple-mobile-web-app-title" content="Nano-Banana-Pro">
     <meta name="theme-color" content="#0d9488">
     <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
     <style>
         body {
@@ -107,12 +108,18 @@
                     <option value="asia-southeast1">asia-southeast1 (Singapore)</option>
                     <option value="asia-northeast1">asia-northeast1 (Tokyo)</option>
                 </select>
-                <label class="block text-[10px] text-gray-400 mt-2 mb-1">Omni access token — Vertex / free credits (~1h, from OAuth Playground)</label>
-                <input id="omniTokenInput" type="password" autocomplete="off" placeholder="ya29.… (paste access token)"
-                    class="w-full bg-secondary p-2 rounded-lg border-none focus:ring-2 focus:ring-teal-400 text-sm mb-1">
-                <a href="https://developers.google.com/oauthplayground/#step1&scopes=https%3A//www.googleapis.com/auth/cloud-platform" target="_blank" rel="noopener" class="block text-[10px] text-teal-400 mb-2 underline">→ Get a token (OAuth Playground)</a>
+                <label class="block text-[10px] text-gray-400 mt-3 mb-1 font-semibold text-teal-300">Omni auto-login (Vertex / free credits)</label>
+                <input id="oauthClientIdInput" type="text" autocomplete="off" placeholder="OAuth Client ID (…apps.googleusercontent.com)"
+                    class="w-full bg-secondary p-2 rounded-lg border-none focus:ring-2 focus:ring-teal-400 text-sm mb-2">
+                <button id="oauthSignInBtn" onclick="omniSignIn()" class="w-full py-2 bg-accent rounded-lg text-sm font-bold active:scale-95 transition mb-1">🔓 Sign in with Google</button>
+                <p id="oauthStatus" class="text-[10px] text-gray-500 mb-2">One-time setup below. After signing in once, the token auto-refreshes.</p>
+
                 <details class="mb-2">
-                    <summary class="text-[10px] text-gray-500 cursor-pointer">Advanced: Cloud Run proxy instead of token</summary>
+                    <summary class="text-[10px] text-gray-500 cursor-pointer">Manual token / proxy (advanced)</summary>
+                    <label class="block text-[10px] text-gray-400 mt-2 mb-1">Omni access token (~1h, from OAuth Playground)</label>
+                    <input id="omniTokenInput" type="password" autocomplete="off" placeholder="ya29.… (paste access token)"
+                        class="w-full bg-secondary p-2 rounded-lg border-none focus:ring-2 focus:ring-teal-400 text-sm mb-1">
+                    <a href="https://developers.google.com/oauthplayground/#step1&scopes=https%3A//www.googleapis.com/auth/cloud-platform" target="_blank" rel="noopener" class="block text-[10px] text-teal-400 mb-2 underline">→ Get a token (OAuth Playground)</a>
                     <label class="block text-[10px] text-gray-400 mt-2 mb-1">Omni proxy URL</label>
                     <input id="proxyUrlInput" type="url" autocomplete="off" placeholder="https://…run.app"
                         class="w-full bg-secondary p-2 rounded-lg border-none focus:ring-2 focus:ring-teal-400 text-sm mb-2">
@@ -151,22 +158,11 @@
         </div>
 
         <div id="videoControls" class="hidden justify-between items-center gap-4 mb-6 flex-wrap">
-            <div class="flex bg-gray-700 p-1 rounded-full">
-                <button onclick="setVideoModel('QUALITY')" id="btnVidQ" class="px-3 py-1 rounded-full text-xs font-bold active-res">VEO 3.1</button>
-                <button onclick="setVideoModel('FAST')" id="btnVidF" class="px-3 py-1 rounded-full text-xs font-bold">3.1 FAST</button>
-                <button onclick="setVideoModel('OMNI')" id="btnVidO" class="px-3 py-1 rounded-full text-xs font-bold">OMNI</button>
-            </div>
-            <div class="flex items-center gap-2">
-                <select id="videoDurationSelect" class="bg-input border-none text-sm rounded-lg p-2 focus:ring-2 focus:ring-teal-400">
-                    <option value="4">4s</option>
-                    <option value="6">6s</option>
-                    <option value="8" selected>8s</option>
-                </select>
-                <select id="videoAspectSelect" class="bg-input border-none text-sm rounded-lg p-2 focus:ring-2 focus:ring-teal-400">
-                    <option value="16:9">16:9</option>
-                    <option value="9:16">9:16</option>
-                </select>
-            </div>
+            <span class="text-xs font-bold text-gray-300 px-3 py-1 rounded-full bg-gray-700">Omni Flash</span>
+            <select id="videoAspectSelect" class="bg-input border-none text-sm rounded-lg p-2 focus:ring-2 focus:ring-teal-400">
+                <option value="16:9">16:9</option>
+                <option value="9:16">9:16</option>
+            </select>
         </div>
 
         <div class="mb-4 border border-gray-600 rounded-xl bg-input overflow-hidden">
@@ -257,6 +253,9 @@
         const PROXY_URL_STORAGE = 'nanobanana_proxy_url';
         const PROXY_SECRET_STORAGE = 'nanobanana_proxy_secret';
         const OMNI_TOKEN_STORAGE = 'nanobanana_omni_token';
+        const OAUTH_CLIENT_ID_STORAGE = 'nanobanana_oauth_client_id';
+        const TOKEN_EXPIRY_STORAGE = 'nanobanana_token_expiry';
+        const OAUTH_SCOPE = 'https://www.googleapis.com/auth/cloud-platform';
         const VERTEX_PROJECT = 'fhnw-gemini';
         const DEFAULT_REGION = 'us-central1';
 
@@ -264,7 +263,7 @@
         let currentRes = "2K";
         let currentModel = "PRO";
         let currentMode = "IMAGE";
-        let currentVideoModel = "QUALITY";
+        let currentVideoModel = "OMNI";
         let audioCtx = null;
 
         const ratioSelect = document.getElementById('aspectRatioSelect');
@@ -279,6 +278,90 @@
         function getProxyUrl() { return (localStorage.getItem(PROXY_URL_STORAGE) || '').trim(); }
         function getProxySecret() { return localStorage.getItem(PROXY_SECRET_STORAGE) || ''; }
         function getOmniToken() { return (localStorage.getItem(OMNI_TOKEN_STORAGE) || '').trim(); }
+        function getClientId() { return (localStorage.getItem(OAUTH_CLIENT_ID_STORAGE) || '').trim(); }
+        function getTokenExpiry() { return parseInt(localStorage.getItem(TOKEN_EXPIRY_STORAGE) || '0', 10); }
+
+        // ---- Automatic OAuth (Google Identity Services) --------------------
+        // After a one-time consent, a fresh ~1h Vertex access token can be
+        // minted silently (no clicks) so Omni keeps running on free credits.
+        let _tokenClient = null;
+        let _tokenResolve = null, _tokenReject = null;
+
+        function setOauthStatus(text, color) {
+            const el = document.getElementById('oauthStatus');
+            if (el) { el.textContent = text; if (color) el.style.color = color; }
+        }
+
+        function initTokenClient() {
+            if (_tokenClient) return _tokenClient;
+            if (!(window.google && google.accounts && google.accounts.oauth2)) return null;
+            const cid = getClientId();
+            if (!cid) return null;
+            _tokenClient = google.accounts.oauth2.initTokenClient({
+                client_id: cid,
+                scope: OAUTH_SCOPE,
+                callback: (resp) => {
+                    if (resp && resp.access_token) {
+                        localStorage.setItem(OMNI_TOKEN_STORAGE, resp.access_token);
+                        localStorage.setItem(TOKEN_EXPIRY_STORAGE, String(Date.now() + ((resp.expires_in || 3600) * 1000)));
+                        const inp = document.getElementById('omniTokenInput');
+                        if (inp) inp.value = resp.access_token;
+                        updateKeyStatus();
+                        setOauthStatus('Signed in — token active. Auto-refreshes.', '#5eead4');
+                        if (_tokenResolve) _tokenResolve(resp.access_token);
+                    } else if (_tokenReject) {
+                        _tokenReject(new Error((resp && resp.error) || 'No token returned'));
+                    }
+                    _tokenResolve = _tokenReject = null;
+                },
+                error_callback: (err) => {
+                    if (_tokenReject) _tokenReject(new Error((err && err.type) || 'OAuth error'));
+                    _tokenResolve = _tokenReject = null;
+                }
+            });
+            return _tokenClient;
+        }
+
+        function requestToken(interactive) {
+            return new Promise((resolve, reject) => {
+                const c = initTokenClient();
+                if (!c) return reject(new Error('Enter your OAuth Client ID and Save first (and wait a moment for Google to load).'));
+                _tokenResolve = resolve; _tokenReject = reject;
+                try {
+                    c.requestAccessToken({ prompt: interactive ? 'consent' : '' });
+                } catch (e) {
+                    _tokenResolve = _tokenReject = null;
+                    reject(e);
+                }
+            });
+        }
+
+        // Called by the Sign-in button (interactive consent).
+        async function omniSignIn() {
+            const cid = document.getElementById('oauthClientIdInput').value.trim();
+            if (cid) localStorage.setItem(OAUTH_CLIENT_ID_STORAGE, cid);
+            _tokenClient = null; // re-init with (possibly new) client id
+            setOauthStatus('Opening Google sign-in…', '#a0a0a0');
+            try {
+                await requestToken(true);
+            } catch (e) {
+                setOauthStatus('Sign-in failed: ' + (e.message || e), '#f87171');
+            }
+        }
+
+        // Ensure a non-expired token before an Omni call; refresh silently if
+        // a client id is configured, else fall back to whatever manual token
+        // is present.
+        async function ensureFreshToken() {
+            if (!getClientId()) return; // manual-token / proxy mode
+            const fresh = getOmniToken() && Date.now() < getTokenExpiry() - 5 * 60 * 1000;
+            if (fresh) return;
+            try {
+                await requestToken(false);          // silent
+            } catch (_) {
+                await requestToken(true);           // needs a click / re-consent
+            }
+        }
 
         function vertexEndpoint(modelId, verb) {
             const region = getRegion();
@@ -303,11 +386,13 @@
             const proxyUrlIn = document.getElementById('proxyUrlInput');
             const proxySecretIn = document.getElementById('proxySecretInput');
             const omniTokenIn = document.getElementById('omniTokenInput');
+            const clientIdIn = document.getElementById('oauthClientIdInput');
             if (proxyUrlIn) proxyUrlIn.value = getProxyUrl();
             if (proxySecretIn) proxySecretIn.value = getProxySecret();
             if (omniTokenIn) omniTokenIn.value = getOmniToken();
+            if (clientIdIn) clientIdIn.value = getClientId();
             if (k) {
-                const omni = getOmniToken() ? ' · omni:token' : (getProxyUrl() ? ' · omni:proxy' : '');
+                const omni = getClientId() ? ' · omni:auto' : (getOmniToken() ? ' · omni:token' : (getProxyUrl() ? ' · omni:proxy' : ''));
                 status.textContent = `API Key: set (…${k.slice(-4)}) · ${region}${omni}`;
                 details.open = false;
                 details.classList.add('mt-2');
@@ -333,9 +418,12 @@
             const purl = document.getElementById('proxyUrlInput').value.trim();
             const psec = document.getElementById('proxySecretInput').value;
             const otok = document.getElementById('omniTokenInput').value.trim();
+            const cid = document.getElementById('oauthClientIdInput').value.trim();
             if (purl) localStorage.setItem(PROXY_URL_STORAGE, purl); else localStorage.removeItem(PROXY_URL_STORAGE);
             if (psec) localStorage.setItem(PROXY_SECRET_STORAGE, psec); else localStorage.removeItem(PROXY_SECRET_STORAGE);
             if (otok) localStorage.setItem(OMNI_TOKEN_STORAGE, otok); else localStorage.removeItem(OMNI_TOKEN_STORAGE);
+            if (cid) localStorage.setItem(OAUTH_CLIENT_ID_STORAGE, cid); else localStorage.removeItem(OAUTH_CLIENT_ID_STORAGE);
+            _tokenClient = null;
             updateKeyStatus();
         }
 
@@ -345,6 +433,9 @@
             localStorage.removeItem(PROXY_URL_STORAGE);
             localStorage.removeItem(PROXY_SECRET_STORAGE);
             localStorage.removeItem(OMNI_TOKEN_STORAGE);
+            localStorage.removeItem(OAUTH_CLIENT_ID_STORAGE);
+            localStorage.removeItem(TOKEN_EXPIRY_STORAGE);
+            _tokenClient = null;
             updateKeyStatus();
         }
 
@@ -561,20 +652,16 @@
             document.getElementById('btnFLASH').classList.toggle('active-res', val === 'FLASH');
         }
 
-        // Omni accepts image OR video references; other modes are image-only.
+        // Video mode is Omni, which accepts image OR video references.
         function updateUploadTargets() {
             const input = document.getElementById('imageUpload');
             const label = document.getElementById('uploadLabel');
-            const omni = currentMode === 'VIDEO' && currentVideoModel === 'OMNI';
-            if (currentMode !== 'VIDEO') {
-                input.accept = 'image/*';
-                label.textContent = 'Upload Source Images';
-            } else if (omni) {
+            if (currentMode === 'VIDEO') {
                 input.accept = 'image/*,video/*';
                 label.textContent = 'Upload Reference Image / Video (optional)';
             } else {
                 input.accept = 'image/*';
-                label.textContent = 'Upload Reference Image (optional)';
+                label.textContent = 'Upload Source Images';
             }
         }
 
@@ -596,17 +683,6 @@
                 imgCtl.classList.remove('hidden');
                 promptEl.placeholder = 'Describe changes or new image...';
             }
-            updateUploadTargets();
-        }
-
-        function setVideoModel(val) {
-            currentVideoModel = val;
-            document.getElementById('btnVidQ').classList.toggle('active-res', val === 'QUALITY');
-            document.getElementById('btnVidF').classList.toggle('active-res', val === 'FAST');
-            document.getElementById('btnVidO').classList.toggle('active-res', val === 'OMNI');
-            // Omni's duration/aspect are inferred from the prompt; Veo uses the selects.
-            const isOmni = val === 'OMNI';
-            document.getElementById('videoDurationSelect').classList.toggle('hidden', isOmni);
             updateUploadTargets();
         }
 
@@ -1486,9 +1562,7 @@
                 imageModel: currentModel,
                 res: currentRes,
                 ratio: ratioSelect.value,
-                videoModel: currentVideoModel,
                 videoAspect: document.getElementById('videoAspectSelect').value,
-                videoDuration: parseInt(document.getElementById('videoDurationSelect').value, 10),
                 uploads: uploadedImages.map(m => ({ data: m.data, mime: m.mime, isVideo: m.isVideo, w: m.w, h: m.h }))
             };
         }
@@ -1513,29 +1587,10 @@
             return { type: 'image', dataUrl: `data:${mime};base64,${b64}`, model: usedModel, res: opts.res, ratio: opts.ratio, cost: priceForImage(usedModel, opts.res) };
         }
 
-        async function generateVeo(prompt, opts, slot) {
-            const modelLabel = opts.videoModel === 'FAST' ? 'Veo 3.1 Fast' : 'Veo 3.1';
-            const modelId = VIDEO_MODELS[opts.videoModel];
-            const aspect = opts.videoAspect;
-            const duration = opts.videoDuration;
-            const instance = { prompt };
-            if (opts.uploads.length > 0) {
-                instance.image = { bytesBase64Encoded: opts.uploads[0].data, mimeType: opts.uploads[0].mime };
-            }
-            const body = { instances: [instance], parameters: { aspectRatio: aspect, durationSeconds: duration, personGeneration: 'allow_adult' } };
-            slot.setStatus(`Starting ${modelLabel}…`);
-            const opName = await startVideoOperation(modelId, body);
-            const startMs = Date.now();
-            const response = await pollVideoOperation(opName, (t) => slot.setStatus(t), startMs);
-            const result = extractVideoResult(response);
-            if (!result) throw new Error('No video in response');
-            let dataUrl;
-            if (result.base64) dataUrl = `data:${result.mime};base64,${result.base64}`;
-            else { slot.setStatus('Downloading video…'); dataUrl = await fetchVideoAsDataUrl(result.uri); }
-            return { type: 'video', dataUrl, model: modelLabel, res: `${duration}s`, ratio: aspect, cost: priceForVideo(opts.videoModel, duration) };
-        }
-
         async function generateOmni(prompt, opts, slot) {
+            // Auto-refresh the OAuth token (silent) before the call if configured.
+            slot.setStatus('Checking sign-in…');
+            try { await ensureFreshToken(); } catch (e) { throw new Error('Sign-in needed: ' + (e.message || e)); }
             const key = getKey();
             const uploads = opts.uploads;
             const hasMedia = uploads.length > 0;
@@ -1623,13 +1678,8 @@
             try {
                 let out;
                 if (opts.mode === 'VIDEO') {
-                    if (opts.videoModel === 'OMNI') {
-                        charged = chargeCredit(PRICING.video.OMNI || 0);
-                        out = await generateOmni(prompt, opts, slot);
-                    } else {
-                        charged = chargeCredit(priceForVideo(opts.videoModel, opts.videoDuration));
-                        out = await generateVeo(prompt, opts, slot);
-                    }
+                    charged = chargeCredit(PRICING.video.OMNI || 0);
+                    out = await generateOmni(prompt, opts, slot);
                 } else {
                     charged = chargeCredit(priceForImage(opts.imageModel, opts.res));
                     out = await generateImage(prompt, opts, slot);
