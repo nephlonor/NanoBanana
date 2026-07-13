@@ -789,8 +789,13 @@
 
         // Load an image (from file upload or a result) as the inpaint base:
         // downscale to long edge <= 2048, size both canvases, cache the JPEG.
+        // A sequence token makes the LAST requested load win, so a slow decode
+        // (e.g. the mode-switch auto-load) can't clobber a newer one.
+        let inpaintLoadSeq = 0;
         async function loadInpaintBase(src) {
+            const seq = ++inpaintLoadSeq;
             const img = await loadImageEl(src);
+            if (seq !== inpaintLoadSeq) return;
             const scale = Math.min(1, 2048 / Math.max(img.width, img.height));
             inpaintW = Math.max(1, Math.round(img.width * scale));
             inpaintH = Math.max(1, Math.round(img.height * scale));
@@ -1012,6 +1017,30 @@
             loadInpaintBase(url).then(() => {
                 document.getElementById('inpaintStage').scrollIntoView({ behavior: 'smooth', block: 'center' });
             }).catch(err => alert('Could not load result as base: ' + err.message));
+        }
+
+        // Restore an inpaint from history for further mask/feather tuning:
+        // base + mask go back into the editor, the feather slider is set to
+        // the stored value, and a live result slot with Re-blend is recreated.
+        async function tuneInpaintFromHistory(id) {
+            const rec = await getHistoryItem(id);
+            if (!rec || !rec.inpaint) { alert('This entry has no stored tuning data.'); return; }
+            const t = rec.inpaint;
+            setMode('INPAINT');
+            try {
+                await loadInpaintBase(t.base);
+                const maskImg = await loadImageEl(t.mask);
+                maskCtx().drawImage(maskImg, 0, 0, maskCanvas.width, maskCanvas.height);
+            } catch (e) {
+                alert('Could not restore editor state: ' + (e.message || e));
+                return;
+            }
+            document.getElementById('featherRange').value = t.feather || 0;
+            const snap = { base: t.base, marked: null, mask: t.mask, feather: t.feather || 0, w: t.w, h: t.h };
+            const slot = createSlot();
+            slot.setInpaint(rec.dataUrl, t.raw, snap, { historyId: rec.id });
+            document.getElementById('historyDetails').open = false;
+            document.getElementById('inpaintStage').scrollIntoView({ behavior: 'smooth', block: 'center' });
         }
 
         document.getElementById('imageUpload').addEventListener('change', (e) => {
@@ -1243,7 +1272,7 @@
                         const c = e.target.result;
                         if (!c) { resolve(out); return; }
                         const v = c.value;
-                        out.push({ id: v.id, type: v.type || 'image', prompt: v.prompt, model: v.model, res: v.res, ratio: v.ratio, timestamp: v.timestamp, thumb: v.thumb || null });
+                        out.push({ id: v.id, type: v.type || 'image', prompt: v.prompt, model: v.model, res: v.res, ratio: v.ratio, timestamp: v.timestamp, thumb: v.thumb || null, isInpaint: !!v.inpaint });
                         c.continue();
                     };
                     cur.onerror = () => resolve(out);
@@ -1426,6 +1455,17 @@
                         if (rec && rec.dataUrl) saveVideo(rec.dataUrl, saveBtn);
                     });
                     meta.appendChild(saveBtn);
+                }
+
+                if (item.isInpaint) {
+                    const tuneBtn = document.createElement('button');
+                    tuneBtn.textContent = '✎ Tune mask / feather';
+                    tuneBtn.className = 'mt-1 self-start text-[10px] text-teal-400 hover:text-teal-300 transition active:scale-95';
+                    tuneBtn.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        tuneInpaintFromHistory(item.id);
+                    });
+                    meta.appendChild(tuneBtn);
                 }
 
                 card.appendChild(imgWrap);
@@ -2092,8 +2132,21 @@
                 if (out.type === 'video') slot.setVideo(out.dataUrl);
                 else if (out.type === 'inpaint') slot.setInpaint(out.dataUrl, out.rawUrl, opts.inpaint, histCtx);
                 else slot.setImage(out.dataUrl);
-                addToHistory({ type: out.type === 'video' ? 'video' : 'image', dataUrl: out.dataUrl, prompt: out.type === 'inpaint' ? `[inpaint] ${prompt}` : prompt, model: out.model, res: out.res, ratio: out.ratio, timestamp: Date.now() })
-                    .then((id) => { histCtx.historyId = id; });
+                const histRec = { type: out.type === 'video' ? 'video' : 'image', dataUrl: out.dataUrl, prompt: out.type === 'inpaint' ? `[inpaint] ${prompt}` : prompt, model: out.model, res: out.res, ratio: out.ratio, timestamp: Date.now() };
+                if (out.type === 'inpaint') {
+                    // Keep the tuning inputs so the mask/feather can be
+                    // readjusted later from history (raw is re-composited
+                    // client-side — no new generation needed).
+                    histRec.inpaint = {
+                        raw: out.rawUrl,
+                        base: opts.inpaint.base,
+                        mask: opts.inpaint.mask,
+                        feather: opts.inpaint.feather,
+                        w: opts.inpaint.w,
+                        h: opts.inpaint.h
+                    };
+                }
+                addToHistory(histRec).then((id) => { histCtx.historyId = id; });
                 playRisingBing(false);
                 if (navigator.vibrate) navigator.vibrate(120);
             } catch (err) {
