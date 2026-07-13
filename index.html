@@ -952,6 +952,21 @@
             return { type: 'inpaint', dataUrl: composited, rawUrl, model: `${usedModel} (inpaint)`, res: genOpts.res, ratio: genOpts.ratio, cost: priceForImage(usedModel, opts.res) };
         }
 
+        // Overwrite a history record's image + thumbnail (used by re-blend so
+        // the stored version always matches the tuned result).
+        async function updateHistoryImage(id, dataUrl) {
+            try {
+                const rec = await getHistoryItem(id);
+                if (!rec) return;
+                rec.dataUrl = dataUrl;
+                rec.thumb = await makeImageThumb(dataUrl);
+                await putHistory(rec);
+                refreshHistoryUI();
+            } catch (e) {
+                console.warn('history update failed:', e);
+            }
+        }
+
         function useAsInpaintBase(url) {
             setMode('INPAINT');
             loadInpaintBase(url).then(() => {
@@ -1123,11 +1138,13 @@
             if (record.type === 'image' && !record.thumb) {
                 record.thumb = await makeImageThumb(record.dataUrl);
             }
+            let newId = null;
             try {
                 const db = await openHistoryDb();
                 await new Promise((resolve, reject) => {
                     const tx = db.transaction(HISTORY_STORE, 'readwrite');
-                    tx.objectStore(HISTORY_STORE).add(record);
+                    const req = tx.objectStore(HISTORY_STORE).add(record);
+                    req.onsuccess = () => { newId = req.result; };
                     tx.oncomplete = resolve;
                     tx.onerror = () => reject(tx.error);
                 });
@@ -1153,6 +1170,7 @@
             } catch (e) {
                 console.warn('history write failed:', e);
             }
+            return newId;
         }
 
         async function getHistoryItem(id) {
@@ -1802,38 +1820,75 @@
                     vid.play().catch(() => {});
                     slot.dataset.done = '1';
                 },
-                setInpaint(compositedUrl, rawUrl) {
+                setInpaint(compositedUrl, rawUrl, snap, ctx) {
                     spin.remove(); media.innerHTML = '';
+                    let currentClean = compositedUrl;
+                    let showingRaw = false;
                     const img = document.createElement('img');
-                    img.src = compositedUrl;
+                    img.src = currentClean;
                     img.className = 'w-full h-full object-contain';
                     img.style.cursor = 'zoom-in';
                     img.addEventListener('click', () => enlarge(img.src, 'image'));
                     media.appendChild(img);
 
-                    let showingRaw = false;
-                    const row = document.createElement('div');
-                    row.className = 'flex gap-2 mt-2';
+                    const row1 = document.createElement('div');
+                    row1.className = 'flex gap-2 mt-2';
                     const tog = document.createElement('button');
                     tog.textContent = 'Show raw';
                     tog.className = 'flex-1 py-2 bg-secondary rounded-lg text-xs font-bold active:scale-95 transition';
                     const dl = document.createElement('a');
                     dl.textContent = 'Download ↓';
                     dl.className = 'flex-1 py-2 bg-secondary rounded-lg text-xs font-bold text-center active:scale-95 transition';
-                    dl.href = compositedUrl;
+                    dl.href = currentClean;
                     dl.download = `inpaint-${Date.now()}.png`;
                     tog.addEventListener('click', () => {
                         showingRaw = !showingRaw;
-                        img.src = showingRaw ? rawUrl : compositedUrl;
+                        img.src = showingRaw ? rawUrl : currentClean;
                         dl.href = img.src;
                         tog.textContent = showingRaw ? 'Show clean' : 'Show raw';
+                    });
+                    row1.append(tog, dl);
+
+                    const row2 = document.createElement('div');
+                    row2.className = 'flex gap-2 mt-2';
+                    const reblend = document.createElement('button');
+                    reblend.textContent = '✎ Re-blend (edit mask/feather)';
+                    reblend.className = 'flex-1 py-2 bg-secondary rounded-lg text-xs font-bold active:scale-95 transition';
+                    reblend.addEventListener('click', async () => {
+                        if (!snap) return;
+                        const orig = reblend.textContent;
+                        reblend.disabled = true;
+                        reblend.textContent = 'Blending…';
+                        try {
+                            // Re-composite the SAME raw output through the mask
+                            // as it is painted in the editor RIGHT NOW, with the
+                            // current feather value. Free — no API call.
+                            const tuned = {
+                                ...snap,
+                                mask: maskCanvas.toDataURL('image/png'),
+                                feather: parseInt(document.getElementById('featherRange').value, 10) || 0
+                            };
+                            currentClean = await compositeInpaint(rawUrl, tuned);
+                            showingRaw = false;
+                            img.src = currentClean;
+                            dl.href = currentClean;
+                            tog.textContent = 'Show raw';
+                            if (ctx && ctx.historyId != null) updateHistoryImage(ctx.historyId, currentClean);
+                        } catch (e) {
+                            alert('Re-blend failed: ' + (e.message || e));
+                        } finally {
+                            reblend.disabled = false;
+                            reblend.textContent = orig;
+                        }
                     });
                     const useBtn = document.createElement('button');
                     useBtn.textContent = 'Use as base ↻';
                     useBtn.className = 'flex-1 py-2 bg-accent rounded-lg text-xs font-bold active:scale-95 transition';
                     useBtn.addEventListener('click', () => useAsInpaintBase(img.src));
-                    row.append(tog, dl, useBtn);
-                    slot.appendChild(row);
+                    row2.append(reblend, useBtn);
+
+                    slot.appendChild(row1);
+                    slot.appendChild(row2);
                     slot.dataset.done = '1';
                 },
                 setError(msg) {
@@ -1993,10 +2048,12 @@
                     out = await generateImage(prompt, opts, slot);
                 }
                 adjustCredit((out.cost || charged) - charged);
+                const histCtx = {};
                 if (out.type === 'video') slot.setVideo(out.dataUrl);
-                else if (out.type === 'inpaint') slot.setInpaint(out.dataUrl, out.rawUrl);
+                else if (out.type === 'inpaint') slot.setInpaint(out.dataUrl, out.rawUrl, opts.inpaint, histCtx);
                 else slot.setImage(out.dataUrl);
-                addToHistory({ type: out.type === 'video' ? 'video' : 'image', dataUrl: out.dataUrl, prompt: out.type === 'inpaint' ? `[inpaint] ${prompt}` : prompt, model: out.model, res: out.res, ratio: out.ratio, timestamp: Date.now() });
+                addToHistory({ type: out.type === 'video' ? 'video' : 'image', dataUrl: out.dataUrl, prompt: out.type === 'inpaint' ? `[inpaint] ${prompt}` : prompt, model: out.model, res: out.res, ratio: out.ratio, timestamp: Date.now() })
+                    .then((id) => { histCtx.historyId = id; });
                 playRisingBing(false);
                 if (navigator.vibrate) navigator.vibrate(120);
             } catch (err) {
