@@ -138,8 +138,8 @@
         <div class="flex justify-center mb-4">
             <div class="flex bg-gray-700 p-1 rounded-full">
                 <button onclick="setMode('IMAGE')" id="btnModeImage" class="px-4 py-1 rounded-full text-xs font-bold active-res">IMAGE</button>
-                <button onclick="setMode('VIDEO')" id="btnModeVideo" class="px-4 py-1 rounded-full text-xs font-bold">VIDEO</button>
                 <button onclick="setMode('INPAINT')" id="btnModeInpaint" class="px-4 py-1 rounded-full text-xs font-bold">INPAINT</button>
+                <button onclick="setMode('VIDEO')" id="btnModeVideo" class="px-4 py-1 rounded-full text-xs font-bold">VIDEO</button>
             </div>
         </div>
 
@@ -698,6 +698,7 @@
         }
 
         function setMode(val) {
+            const prevMode = currentMode;
             currentMode = val;
             document.getElementById('btnModeImage').classList.toggle('active-res', val === 'IMAGE');
             document.getElementById('btnModeVideo').classList.toggle('active-res', val === 'VIDEO');
@@ -705,21 +706,29 @@
             const imgCtl = document.getElementById('imageControls');
             const vidCtl = document.getElementById('videoControls');
             const inpaint = document.getElementById('inpaintSection');
+            const aspectSel = document.getElementById('aspectRatioSelect');
             const promptEl = document.getElementById('prompt');
             imgCtl.classList.add('hidden');
             vidCtl.classList.add('hidden');
             vidCtl.classList.remove('flex');
             inpaint.classList.add('hidden');
+            // Leaving inpaint: the editor image returns to the reference grid.
+            if (prevMode === 'INPAINT' && val !== 'INPAINT') restoreHeldRef();
             if (val === 'VIDEO') {
                 vidCtl.classList.remove('hidden');
                 vidCtl.classList.add('flex');
                 promptEl.placeholder = 'Describe the video you want to create…';
             } else if (val === 'INPAINT') {
                 inpaint.classList.remove('hidden');
+                // Model + resolution apply to inpaint too; aspect comes from
+                // the base image, so hide only the ratio select.
+                imgCtl.classList.remove('hidden');
+                aspectSel.classList.add('hidden');
                 promptEl.placeholder = 'Describe what to change in the masked region…';
-                autoLoadInpaintBase();
+                moveFirstRefToEditor();
             } else {
                 imgCtl.classList.remove('hidden');
+                aspectSel.classList.remove('hidden');
                 promptEl.placeholder = 'Describe changes or new image...';
             }
             updateUploadTargets();
@@ -810,14 +819,28 @@
             document.getElementById('inpaintTools').classList.remove('hidden');
         }
 
-        // On switching into INPAINT, auto-load the first uploaded grid image
-        // as the base. Guard on the source URL so toggling modes with the same
-        // upload doesn't wipe an in-progress mask.
-        function autoLoadInpaintBase() {
-            const first = uploadedImages.find(m => !m.isVideo);
-            if (first && first.url !== inpaintSrcUrl) {
-                loadInpaintBase(first.url).catch(err => console.warn('auto-load base failed:', err));
+        // Switching into INPAINT moves the first grid image INTO the editor
+        // (it becomes the edit target, not a reference); switching away puts
+        // it back at the front of the grid. Held in inpaintHeldRef meanwhile.
+        let inpaintHeldRef = null;
+
+        function moveFirstRefToEditor() {
+            const idx = uploadedImages.findIndex(m => !m.isVideo);
+            if (idx === -1) return;
+            const item = uploadedImages.splice(idx, 1)[0];
+            inpaintHeldRef = item;
+            renderPreviews();
+            // Same source as already loaded → keep the mask; else load fresh.
+            if (item.url !== inpaintSrcUrl) {
+                loadInpaintBase(item.url).catch(err => console.warn('auto-load base failed:', err));
             }
+        }
+
+        function restoreHeldRef() {
+            if (!inpaintHeldRef) return;
+            uploadedImages.unshift(inpaintHeldRef);
+            inpaintHeldRef = null;
+            renderPreviews();
         }
 
         document.getElementById('inpaintUpload').addEventListener('change', (e) => {
@@ -973,12 +996,14 @@
             const genOpts = { res: opts.res, ratio: findClosestRatio(snap.w / snap.h).value };
             const meta = (model) => ({ type: 'image', prompt: `[inpaint] ${prompt}`, model, res: genOpts.res, ratio: genOpts.ratio, timestamp: Date.now() });
 
-            let imagePart, usedModel = 'PRO';
+            const primary = opts.imageModel || 'PRO';
+            let imagePart, usedModel = primary;
             try {
-                imagePart = await attemptGenerate('PRO', parts, meta('PRO'), genOpts);
+                imagePart = await attemptGenerate(primary, parts, meta(primary), genOpts);
             } catch (firstErr) {
-                console.error('Inpaint PRO failed:', firstErr);
-                slot.setStatus('PRO failed — retrying FLASH…');
+                console.error(`Inpaint ${primary} failed:`, firstErr);
+                if (primary === 'FLASH') throw firstErr;
+                slot.setStatus(`${primary} failed — retrying FLASH…`);
                 await sleep(RETRY_DELAY_MS);
                 imagePart = await attemptGenerate('FLASH', parts, meta('FLASH'), genOpts);
                 usedModel = 'FLASH';
@@ -2121,7 +2146,7 @@
                     charged = chargeCredit(PRICING.video.OMNI || 0);
                     out = await generateOmni(prompt, opts, slot);
                 } else if (opts.mode === 'INPAINT') {
-                    charged = chargeCredit(priceForImage('PRO', opts.res));
+                    charged = chargeCredit(priceForImage(opts.imageModel, opts.res));
                     out = await generateInpaint(prompt, opts, slot);
                 } else {
                     charged = chargeCredit(priceForImage(opts.imageModel, opts.res));
