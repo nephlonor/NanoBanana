@@ -137,8 +137,9 @@
 
         <div class="flex justify-center mb-4">
             <div class="flex bg-gray-700 p-1 rounded-full">
-                <button onclick="setMode('IMAGE')" id="btnModeImage" class="px-6 py-1 rounded-full text-xs font-bold active-res">IMAGE</button>
-                <button onclick="setMode('VIDEO')" id="btnModeVideo" class="px-6 py-1 rounded-full text-xs font-bold">VIDEO</button>
+                <button onclick="setMode('IMAGE')" id="btnModeImage" class="px-4 py-1 rounded-full text-xs font-bold active-res">IMAGE</button>
+                <button onclick="setMode('VIDEO')" id="btnModeVideo" class="px-4 py-1 rounded-full text-xs font-bold">VIDEO</button>
+                <button onclick="setMode('INPAINT')" id="btnModeInpaint" class="px-4 py-1 rounded-full text-xs font-bold">INPAINT</button>
             </div>
         </div>
 
@@ -163,6 +164,34 @@
                 <option value="16:9">16:9</option>
                 <option value="9:16">9:16</option>
             </select>
+        </div>
+
+        <div id="inpaintSection" class="hidden mb-4">
+            <label class="block w-full py-3 bg-accent text-center font-bold cursor-pointer rounded-xl transition mb-3">
+                Upload Image to Edit
+                <input type="file" id="inpaintUpload" accept="image/*" class="hidden">
+            </label>
+            <div id="inpaintStage" class="relative w-full hidden rounded-xl overflow-hidden border border-gray-700" style="touch-action:none">
+                <canvas id="baseCanvas" class="w-full block"></canvas>
+                <canvas id="maskCanvas" class="absolute inset-0 w-full h-full" style="opacity:0.55"></canvas>
+            </div>
+            <div id="inpaintTools" class="hidden mt-3">
+                <div class="flex gap-2 mb-3">
+                    <button id="brushBtn" onclick="setBrushMode('brush')" class="flex-1 py-2 rounded-lg text-xs font-bold bg-gray-700 active-res">Brush</button>
+                    <button id="eraseBtn" onclick="setBrushMode('erase')" class="flex-1 py-2 rounded-lg text-xs font-bold bg-gray-700">Erase</button>
+                    <button onclick="undoMask()" class="flex-1 py-2 rounded-lg text-xs font-bold bg-secondary active:scale-95 transition">Undo</button>
+                    <button onclick="clearMask()" class="flex-1 py-2 rounded-lg text-xs font-bold bg-secondary active:scale-95 transition">Clear</button>
+                </div>
+                <div class="flex items-center gap-3 mb-2">
+                    <label class="text-[10px] text-gray-400 w-14">Brush</label>
+                    <input id="brushSize" type="range" min="6" max="120" value="42" class="flex-1 accent-teal-500">
+                </div>
+                <div class="flex items-center gap-3">
+                    <label class="text-[10px] text-gray-400 w-14">Feather</label>
+                    <input id="featherRange" type="range" min="0" max="40" value="12" class="flex-1 accent-teal-500">
+                </div>
+                <p class="text-[10px] text-gray-500 mt-2">Paint the region to change, describe the edit in the prompt, then Generate. Extra uploads below act as reference images.</p>
+            </div>
         </div>
 
         <div class="mb-4 border border-gray-600 rounded-xl bg-input overflow-hidden">
@@ -659,6 +688,9 @@
             if (currentMode === 'VIDEO') {
                 input.accept = 'image/*,video/*';
                 label.textContent = 'Upload Reference Image / Video (optional)';
+            } else if (currentMode === 'INPAINT') {
+                input.accept = 'image/*';
+                label.textContent = 'Upload Reference Images (optional)';
             } else {
                 input.accept = 'image/*';
                 label.textContent = 'Upload Source Images';
@@ -669,17 +701,23 @@
             currentMode = val;
             document.getElementById('btnModeImage').classList.toggle('active-res', val === 'IMAGE');
             document.getElementById('btnModeVideo').classList.toggle('active-res', val === 'VIDEO');
+            document.getElementById('btnModeInpaint').classList.toggle('active-res', val === 'INPAINT');
             const imgCtl = document.getElementById('imageControls');
             const vidCtl = document.getElementById('videoControls');
+            const inpaint = document.getElementById('inpaintSection');
             const promptEl = document.getElementById('prompt');
+            imgCtl.classList.add('hidden');
+            vidCtl.classList.add('hidden');
+            vidCtl.classList.remove('flex');
+            inpaint.classList.add('hidden');
             if (val === 'VIDEO') {
-                imgCtl.classList.add('hidden');
                 vidCtl.classList.remove('hidden');
                 vidCtl.classList.add('flex');
                 promptEl.placeholder = 'Describe the video you want to create…';
+            } else if (val === 'INPAINT') {
+                inpaint.classList.remove('hidden');
+                promptEl.placeholder = 'Describe what to change in the masked region…';
             } else {
-                vidCtl.classList.add('hidden');
-                vidCtl.classList.remove('flex');
                 imgCtl.classList.remove('hidden');
                 promptEl.placeholder = 'Describe changes or new image...';
             }
@@ -699,6 +737,226 @@
         ];
         function nearestVideoAspect(ratio) {
             return VIDEO_ASPECTS.reduce((p, c) => Math.abs(c.r - ratio) < Math.abs(p.r - ratio) ? c : p).value;
+        }
+
+        // ---- Inpaint (mask-based localized edit) ----------------------------
+        // The Gemini edit endpoint has no mask parameter, so inpainting is a
+        // workflow: send the clean original + a copy with the region painted
+        // solid red, wrap the prompt to declare red = edit zone, then composite
+        // the result over the original through the feathered mask client-side.
+
+        const baseCanvas = document.getElementById('baseCanvas');
+        const maskCanvas = document.getElementById('maskCanvas');
+        let inpaintBaseUrl = null;       // scaled original as JPEG data URL
+        let inpaintW = 0, inpaintH = 0;
+        let brushMode = 'brush';
+        const maskUndoStack = [];
+        let painting = false;
+
+        function maskCtx() { return maskCanvas.getContext('2d'); }
+
+        function setBrushMode(m) {
+            brushMode = m;
+            document.getElementById('brushBtn').classList.toggle('active-res', m === 'brush');
+            document.getElementById('eraseBtn').classList.toggle('active-res', m === 'erase');
+        }
+
+        function pushMaskUndo() {
+            try {
+                maskUndoStack.push(maskCtx().getImageData(0, 0, maskCanvas.width, maskCanvas.height));
+                if (maskUndoStack.length > 20) maskUndoStack.shift();
+            } catch (_) {}
+        }
+        function undoMask() {
+            const prev = maskUndoStack.pop();
+            if (prev) maskCtx().putImageData(prev, 0, 0);
+        }
+        function clearMask() {
+            pushMaskUndo();
+            maskCtx().clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+        }
+
+        function loadImageEl(src) {
+            return new Promise((resolve, reject) => {
+                const img = new Image();
+                img.onload = () => resolve(img);
+                img.onerror = () => reject(new Error('Image load failed'));
+                img.src = src;
+            });
+        }
+
+        // Load an image (from file upload or a result) as the inpaint base:
+        // downscale to long edge <= 2048, size both canvases, cache the JPEG.
+        async function loadInpaintBase(src) {
+            const img = await loadImageEl(src);
+            const scale = Math.min(1, 2048 / Math.max(img.width, img.height));
+            inpaintW = Math.max(1, Math.round(img.width * scale));
+            inpaintH = Math.max(1, Math.round(img.height * scale));
+            baseCanvas.width = inpaintW; baseCanvas.height = inpaintH;
+            maskCanvas.width = inpaintW; maskCanvas.height = inpaintH;
+            baseCanvas.getContext('2d').drawImage(img, 0, 0, inpaintW, inpaintH);
+            maskCtx().clearRect(0, 0, inpaintW, inpaintH);
+            maskUndoStack.length = 0;
+            inpaintBaseUrl = baseCanvas.toDataURL('image/jpeg', 0.92);
+            document.getElementById('inpaintStage').classList.remove('hidden');
+            document.getElementById('inpaintTools').classList.remove('hidden');
+        }
+
+        document.getElementById('inpaintUpload').addEventListener('change', (e) => {
+            const file = e.target.files && e.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = (ev) => loadInpaintBase(ev.target.result).catch(err => alert('Could not load image: ' + err.message));
+            reader.readAsDataURL(file);
+            e.target.value = '';
+        });
+
+        function maskPos(e) {
+            const rect = maskCanvas.getBoundingClientRect();
+            return {
+                x: (e.clientX - rect.left) * (maskCanvas.width / rect.width),
+                y: (e.clientY - rect.top) * (maskCanvas.height / rect.height)
+            };
+        }
+
+        maskCanvas.addEventListener('pointerdown', (e) => {
+            if (!inpaintBaseUrl) return;
+            e.preventDefault();
+            maskCanvas.setPointerCapture(e.pointerId);
+            pushMaskUndo();
+            painting = true;
+            const ctx = maskCtx();
+            const rect = maskCanvas.getBoundingClientRect();
+            const lw = parseInt(document.getElementById('brushSize').value, 10) * (maskCanvas.width / rect.width);
+            ctx.lineCap = ctx.lineJoin = 'round';
+            ctx.lineWidth = lw;
+            ctx.globalCompositeOperation = brushMode === 'erase' ? 'destination-out' : 'source-over';
+            ctx.strokeStyle = ctx.fillStyle = 'rgb(255,40,70)';
+            const { x, y } = maskPos(e);
+            ctx.beginPath();
+            ctx.arc(x, y, lw / 2, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.beginPath();
+            ctx.moveTo(x, y);
+        });
+        maskCanvas.addEventListener('pointermove', (e) => {
+            if (!painting) return;
+            e.preventDefault();
+            const { x, y } = maskPos(e);
+            const ctx = maskCtx();
+            ctx.lineTo(x, y);
+            ctx.stroke();
+        });
+        const endPaint = () => {
+            painting = false;
+            maskCtx().globalCompositeOperation = 'source-over';
+        };
+        maskCanvas.addEventListener('pointerup', endPaint);
+        maskCanvas.addEventListener('pointercancel', endPaint);
+
+        function maskIsEmpty() {
+            try {
+                const d = maskCtx().getImageData(0, 0, maskCanvas.width, maskCanvas.height).data;
+                for (let i = 3; i < d.length; i += 16) if (d[i] > 0) return false;
+                // Coarse stride above may miss thin strokes; confirm with full pass.
+                for (let i = 3; i < d.length; i += 4) if (d[i] > 0) return false;
+                return true;
+            } catch (_) { return true; }
+        }
+
+        // Original with the painted region drawn in solid red (JPEG).
+        function buildMarkedDataUrl() {
+            const c = document.createElement('canvas');
+            c.width = inpaintW; c.height = inpaintH;
+            const ctx = c.getContext('2d');
+            ctx.drawImage(baseCanvas, 0, 0);
+            ctx.drawImage(maskCanvas, 0, 0);
+            return c.toDataURL('image/jpeg', 0.92);
+        }
+
+        // final = edited x featheredMask + original x (1 - featheredMask)
+        async function compositeInpaint(rawUrl, snap) {
+            const [rawImg, baseImg, maskImg] = await Promise.all([
+                loadImageEl(rawUrl), loadImageEl(snap.base), loadImageEl(snap.mask)
+            ]);
+            const w = snap.w, h = snap.h;
+
+            const feathered = document.createElement('canvas');
+            feathered.width = w; feathered.height = h;
+            const fctx = feathered.getContext('2d');
+            if (snap.feather > 0 && typeof fctx.filter === 'string') {
+                fctx.filter = `blur(${snap.feather}px)`;
+            }
+            fctx.drawImage(maskImg, 0, 0, w, h);
+            fctx.filter = 'none';
+
+            const clipped = document.createElement('canvas');
+            clipped.width = w; clipped.height = h;
+            const cctx = clipped.getContext('2d');
+            cctx.drawImage(rawImg, 0, 0, w, h);
+            cctx.globalCompositeOperation = 'destination-in';
+            cctx.drawImage(feathered, 0, 0);
+
+            const out = document.createElement('canvas');
+            out.width = w; out.height = h;
+            const octx = out.getContext('2d');
+            octx.drawImage(baseImg, 0, 0, w, h);
+            octx.drawImage(clipped, 0, 0);
+            return out.toDataURL('image/png');
+        }
+
+        function inpaintWrapperPrompt(userPrompt, refCount) {
+            let p = `Two images are provided. Image 1 is the original photo. Image 2 is identical but has one region highlighted in solid red — that red region is an edit mask. Reproduce image 1 exactly, changing ONLY the masked region as follows: ${userPrompt}. Everything outside the masked region must remain pixel-identical to image 1. Do not include any red highlight in the output. Match lighting, grain, perspective and color of the surroundings so the edit blends seamlessly.`;
+            if (refCount > 0) {
+                p += ` The ${refCount === 1 ? 'image' : refCount + ' images'} after the first two ${refCount === 1 ? 'is an additional reference image' : 'are additional reference images'} — use ${refCount === 1 ? 'it' : 'them'} as visual reference for the requested edit.`;
+            }
+            return p;
+        }
+
+        async function generateInpaint(prompt, opts, slot) {
+            const snap = opts.inpaint;
+            const refs = opts.uploads.filter(u => !u.isVideo);
+            slot.setStatus('Editing masked region… (safe to background)');
+
+            const parts = [
+                { inlineData: { mimeType: 'image/jpeg', data: snap.base.split(',')[1] } },
+                { inlineData: { mimeType: 'image/jpeg', data: snap.marked.split(',')[1] } },
+                ...refs.map(u => ({ inlineData: { mimeType: u.mime, data: u.data } })),
+                { text: inpaintWrapperPrompt(prompt, refs.length) }
+            ];
+
+            const genOpts = { res: opts.res, ratio: findClosestRatio(snap.w / snap.h).value };
+            const meta = (model) => ({ type: 'image', prompt: `[inpaint] ${prompt}`, model, res: genOpts.res, ratio: genOpts.ratio, timestamp: Date.now() });
+
+            let imagePart, usedModel = 'PRO';
+            try {
+                imagePart = await attemptGenerate('PRO', parts, meta('PRO'), genOpts);
+            } catch (firstErr) {
+                console.error('Inpaint PRO failed:', firstErr);
+                slot.setStatus('PRO failed — retrying FLASH…');
+                await sleep(RETRY_DELAY_MS);
+                imagePart = await attemptGenerate('FLASH', parts, meta('FLASH'), genOpts);
+                usedModel = 'FLASH';
+            }
+            const rawUrl = `data:${imagePart.inlineData.mimeType || 'image/png'};base64,${imagePart.inlineData.data}`;
+
+            let composited;
+            try {
+                slot.setStatus('Compositing…');
+                composited = await compositeInpaint(rawUrl, snap);
+            } catch (e) {
+                console.warn('Composite failed, showing raw output:', e);
+                composited = rawUrl;
+            }
+
+            return { type: 'inpaint', dataUrl: composited, rawUrl, model: `${usedModel} (inpaint)`, res: genOpts.res, ratio: genOpts.ratio, cost: priceForImage(usedModel, opts.res) };
+        }
+
+        function useAsInpaintBase(url) {
+            setMode('INPAINT');
+            loadInpaintBase(url).then(() => {
+                document.getElementById('inpaintStage').scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }).catch(err => alert('Could not load result as base: ' + err.message));
         }
 
         document.getElementById('imageUpload').addEventListener('change', (e) => {
@@ -1544,6 +1802,40 @@
                     vid.play().catch(() => {});
                     slot.dataset.done = '1';
                 },
+                setInpaint(compositedUrl, rawUrl) {
+                    spin.remove(); media.innerHTML = '';
+                    const img = document.createElement('img');
+                    img.src = compositedUrl;
+                    img.className = 'w-full h-full object-contain';
+                    img.style.cursor = 'zoom-in';
+                    img.addEventListener('click', () => enlarge(img.src, 'image'));
+                    media.appendChild(img);
+
+                    let showingRaw = false;
+                    const row = document.createElement('div');
+                    row.className = 'flex gap-2 mt-2';
+                    const tog = document.createElement('button');
+                    tog.textContent = 'Show raw';
+                    tog.className = 'flex-1 py-2 bg-secondary rounded-lg text-xs font-bold active:scale-95 transition';
+                    const dl = document.createElement('a');
+                    dl.textContent = 'Download ↓';
+                    dl.className = 'flex-1 py-2 bg-secondary rounded-lg text-xs font-bold text-center active:scale-95 transition';
+                    dl.href = compositedUrl;
+                    dl.download = `inpaint-${Date.now()}.png`;
+                    tog.addEventListener('click', () => {
+                        showingRaw = !showingRaw;
+                        img.src = showingRaw ? rawUrl : compositedUrl;
+                        dl.href = img.src;
+                        tog.textContent = showingRaw ? 'Show clean' : 'Show raw';
+                    });
+                    const useBtn = document.createElement('button');
+                    useBtn.textContent = 'Use as base ↻';
+                    useBtn.className = 'flex-1 py-2 bg-accent rounded-lg text-xs font-bold active:scale-95 transition';
+                    useBtn.addEventListener('click', () => useAsInpaintBase(img.src));
+                    row.append(tog, dl, useBtn);
+                    slot.appendChild(row);
+                    slot.dataset.done = '1';
+                },
                 setError(msg) {
                     spin.remove();
                     const d = document.createElement('div');
@@ -1557,7 +1849,7 @@
         }
 
         function snapshotOptions() {
-            return {
+            const opts = {
                 mode: currentMode,
                 imageModel: currentModel,
                 res: currentRes,
@@ -1565,6 +1857,19 @@
                 videoAspect: document.getElementById('videoAspectSelect').value,
                 uploads: uploadedImages.map(m => ({ data: m.data, mime: m.mime, isVideo: m.isVideo, w: m.w, h: m.h }))
             };
+            if (currentMode === 'INPAINT' && inpaintBaseUrl) {
+                // Snapshot base, marked copy, mask and feather at press time so
+                // painting during a running generation can't corrupt it.
+                opts.inpaint = {
+                    base: inpaintBaseUrl,
+                    marked: buildMarkedDataUrl(),
+                    mask: maskCanvas.toDataURL('image/png'),
+                    feather: parseInt(document.getElementById('featherRange').value, 10) || 0,
+                    w: inpaintW,
+                    h: inpaintH
+                };
+            }
+            return opts;
         }
 
         async function generateImage(prompt, opts, slot) {
@@ -1680,13 +1985,18 @@
                 if (opts.mode === 'VIDEO') {
                     charged = chargeCredit(PRICING.video.OMNI || 0);
                     out = await generateOmni(prompt, opts, slot);
+                } else if (opts.mode === 'INPAINT') {
+                    charged = chargeCredit(priceForImage('PRO', opts.res));
+                    out = await generateInpaint(prompt, opts, slot);
                 } else {
                     charged = chargeCredit(priceForImage(opts.imageModel, opts.res));
                     out = await generateImage(prompt, opts, slot);
                 }
                 adjustCredit((out.cost || charged) - charged);
-                if (out.type === 'video') slot.setVideo(out.dataUrl); else slot.setImage(out.dataUrl);
-                addToHistory({ type: out.type, dataUrl: out.dataUrl, prompt, model: out.model, res: out.res, ratio: out.ratio, timestamp: Date.now() });
+                if (out.type === 'video') slot.setVideo(out.dataUrl);
+                else if (out.type === 'inpaint') slot.setInpaint(out.dataUrl, out.rawUrl);
+                else slot.setImage(out.dataUrl);
+                addToHistory({ type: out.type === 'video' ? 'video' : 'image', dataUrl: out.dataUrl, prompt: out.type === 'inpaint' ? `[inpaint] ${prompt}` : prompt, model: out.model, res: out.res, ratio: out.ratio, timestamp: Date.now() });
                 playRisingBing(false);
                 if (navigator.vibrate) navigator.vibrate(120);
             } catch (err) {
@@ -1709,6 +2019,10 @@
                 return alert('API key required. Add it in the panel.');
             }
             if (!prompt) { playRisingBing(true); return alert('Prompt required'); }
+            if (currentMode === 'INPAINT') {
+                if (!inpaintBaseUrl) { playRisingBing(true); return alert('Upload an image to edit first.'); }
+                if (maskIsEmpty()) { playRisingBing(true); return alert('Paint the region you want to change first.'); }
+            }
             pruneCompletedSlots();
             const opts = snapshotOptions();
             const slot = createSlot();
