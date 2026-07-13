@@ -887,6 +887,40 @@
             return c.toDataURL('image/jpeg', 0.92);
         }
 
+        // Build a feathered alpha mask. The slider value is scaled by image
+        // size (canvas px are ~6x denser than screen px on a 2048px image), and
+        // a downscale->upscale smoothing fallback covers browsers where
+        // ctx.filter blur is unsupported/ignored (iOS Safari < 18).
+        function featheredMaskCanvas(maskImg, w, h, featherSetting) {
+            const out = document.createElement('canvas');
+            out.width = w; out.height = h;
+            const ctx = out.getContext('2d');
+            const blurPx = Math.min(200, (featherSetting || 0) * Math.max(w, h) / 512);
+            if (blurPx <= 0.5) {
+                ctx.drawImage(maskImg, 0, 0, w, h);
+                return out;
+            }
+            if (typeof ctx.filter === 'string') {
+                ctx.filter = `blur(${blurPx}px)`;
+                ctx.drawImage(maskImg, 0, 0, w, h);
+                ctx.filter = 'none';
+                return out;
+            }
+            // Fallback: shrink then re-enlarge with smoothing ~= gaussian blur.
+            const k = Math.max(2, blurPx / 2);
+            const sw = Math.max(1, Math.round(w / k));
+            const sh = Math.max(1, Math.round(h / k));
+            const small = document.createElement('canvas');
+            small.width = sw; small.height = sh;
+            const sctx = small.getContext('2d');
+            sctx.imageSmoothingEnabled = true;
+            sctx.drawImage(maskImg, 0, 0, sw, sh);
+            ctx.imageSmoothingEnabled = true;
+            ctx.imageSmoothingQuality = 'high';
+            ctx.drawImage(small, 0, 0, w, h);
+            return out;
+        }
+
         // final = edited x featheredMask + original x (1 - featheredMask)
         async function compositeInpaint(rawUrl, snap) {
             const [rawImg, baseImg, maskImg] = await Promise.all([
@@ -894,14 +928,7 @@
             ]);
             const w = snap.w, h = snap.h;
 
-            const feathered = document.createElement('canvas');
-            feathered.width = w; feathered.height = h;
-            const fctx = feathered.getContext('2d');
-            if (snap.feather > 0 && typeof fctx.filter === 'string') {
-                fctx.filter = `blur(${snap.feather}px)`;
-            }
-            fctx.drawImage(maskImg, 0, 0, w, h);
-            fctx.filter = 'none';
+            const feathered = featheredMaskCanvas(maskImg, w, h, snap.feather);
 
             const clipped = document.createElement('canvas');
             clipped.width = w; clipped.height = h;
