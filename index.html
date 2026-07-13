@@ -717,6 +717,7 @@
             } else if (val === 'INPAINT') {
                 inpaint.classList.remove('hidden');
                 promptEl.placeholder = 'Describe what to change in the masked region…';
+                autoLoadInpaintBase();
             } else {
                 imgCtl.classList.remove('hidden');
                 promptEl.placeholder = 'Describe changes or new image...';
@@ -748,6 +749,7 @@
         const baseCanvas = document.getElementById('baseCanvas');
         const maskCanvas = document.getElementById('maskCanvas');
         let inpaintBaseUrl = null;       // scaled original as JPEG data URL
+        let inpaintSrcUrl = null;        // source URL last loaded into the editor
         let inpaintW = 0, inpaintH = 0;
         let brushMode = 'brush';
         const maskUndoStack = [];
@@ -798,8 +800,19 @@
             maskCtx().clearRect(0, 0, inpaintW, inpaintH);
             maskUndoStack.length = 0;
             inpaintBaseUrl = baseCanvas.toDataURL('image/jpeg', 0.92);
+            inpaintSrcUrl = src;
             document.getElementById('inpaintStage').classList.remove('hidden');
             document.getElementById('inpaintTools').classList.remove('hidden');
+        }
+
+        // On switching into INPAINT, auto-load the first uploaded grid image
+        // as the base. Guard on the source URL so toggling modes with the same
+        // upload doesn't wipe an in-progress mask.
+        function autoLoadInpaintBase() {
+            const first = uploadedImages.find(m => !m.isVideo);
+            if (first && first.url !== inpaintSrcUrl) {
+                loadInpaintBase(first.url).catch(err => console.warn('auto-load base failed:', err));
+            }
         }
 
         document.getElementById('inpaintUpload').addEventListener('change', (e) => {
