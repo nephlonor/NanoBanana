@@ -2190,6 +2190,19 @@
             if (data.output_video && (data.output_video.data || data.output_video.uri)) {
                 return { base64: data.output_video.data, uri: data.output_video.uri, mime: data.output_video.mime_type || 'video/mp4' };
             }
+            // The stored interaction includes user_input steps (i.e. the
+            // uploaded reference video!) — only ever extract from model output,
+            // newest step first. Never fall through to a whole-object scan
+            // when steps exist, or the reference gets returned as the result.
+            if (Array.isArray(data.steps)) {
+                for (let i = data.steps.length - 1; i >= 0; i--) {
+                    const s = data.steps[i];
+                    if (!s || s.type === 'user_input' || s.type === 'thought') continue;
+                    const r = findVideoInObject(s);
+                    if (r) return r;
+                }
+                return null;
+            }
             return findVideoInObject(data);
         }
 
