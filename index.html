@@ -1209,22 +1209,67 @@
 
         const HISTORY_DB = 'nb-history';
         const HISTORY_STORE = 'images';
+        const JOBS_STORE = 'jobs';
         const HISTORY_MAX_IMAGE = 100;
         const HISTORY_MAX_VIDEO = 10;
 
         function openHistoryDb() {
             return new Promise((resolve, reject) => {
-                const req = indexedDB.open(HISTORY_DB, 1);
+                const req = indexedDB.open(HISTORY_DB, 2);
                 req.onupgradeneeded = () => {
                     const db = req.result;
                     if (!db.objectStoreNames.contains(HISTORY_STORE)) {
                         const s = db.createObjectStore(HISTORY_STORE, { keyPath: 'id', autoIncrement: true });
                         s.createIndex('timestamp', 'timestamp');
                     }
+                    if (!db.objectStoreNames.contains(JOBS_STORE)) {
+                        db.createObjectStore(JOBS_STORE, { keyPath: 'id' });
+                    }
                 };
                 req.onsuccess = () => resolve(req.result);
                 req.onerror = () => reject(req.error);
             });
+        }
+
+        // ---- Durable background jobs (Omni interactions) --------------------
+        // Video generations are submitted with background:true, so Google
+        // returns an interaction id in ~1s and renders server-side. The id is
+        // persisted here; polling can resume after suspension, reload, or even
+        // days later — this is what makes results genuinely recoverable.
+        async function saveJob(job) {
+            try {
+                const db = await openHistoryDb();
+                await new Promise((res) => {
+                    const tx = db.transaction(JOBS_STORE, 'readwrite');
+                    tx.objectStore(JOBS_STORE).put(job);
+                    tx.oncomplete = res; tx.onerror = res;
+                });
+                db.close();
+            } catch (e) { console.warn('saveJob failed:', e); }
+        }
+        async function deleteJob(id) {
+            try {
+                const db = await openHistoryDb();
+                await new Promise((res) => {
+                    const tx = db.transaction(JOBS_STORE, 'readwrite');
+                    tx.objectStore(JOBS_STORE).delete(id);
+                    tx.oncomplete = res; tx.onerror = res;
+                });
+                db.close();
+            } catch (_) {}
+        }
+        async function getAllJobs() {
+            try {
+                const db = await openHistoryDb();
+                const jobs = await new Promise((res) => {
+                    const tx = db.transaction(JOBS_STORE, 'readonly');
+                    const rq = tx.objectStore(JOBS_STORE).getAll();
+                    rq.onsuccess = () => res(rq.result || []);
+                    rq.onerror = () => res([]);
+                });
+                db.close();
+                return jobs;
+            } catch (_) { return []; }
         }
 
         async function addToHistory(record) {
@@ -1542,10 +1587,15 @@
             const btn = e.currentTarget;
             const orig = btn.textContent;
             btn.textContent = 'Checking…';
-            const n = await syncFromServiceWorker();
+            // Primary: ask Google for the state of every stored background job.
+            // Secondary: sweep the local SW result cache (desktop image path).
+            let n = 0;
+            try { n += await resumeJobs(); } catch (_) {}
+            try { n += await syncFromServiceWorker(); } catch (_) {}
             await renderHistory();
-            btn.textContent = n > 0 ? `Recovered ${n}` : 'None found';
-            setTimeout(() => { btn.textContent = orig; }, 1800);
+            const stillRunning = activeJobIds.size;
+            btn.textContent = n > 0 ? `Recovered ${n}` : (stillRunning > 0 ? `${stillRunning} still rendering…` : 'None found');
+            setTimeout(() => { btn.textContent = orig; }, 2200);
         });
         updateHistoryCount();
 
@@ -2052,11 +2102,102 @@
             return { type: 'image', dataUrl: `data:${mime};base64,${b64}`, model: usedModel, res: opts.res, ratio: opts.ratio, cost: priceForImage(usedModel, opts.res) };
         }
 
+        // Auth routes for the Interactions API. Jobs store the route so a
+        // resume after reload uses the same path.
+        function omniRoute() {
+            if (getOmniToken() || getClientId()) return { mode: 'token', region: getRegion() };
+            if (getProxyUrl()) return { mode: 'proxy', region: getRegion() };
+            return { mode: 'key', region: getRegion() };
+        }
+        function omniPostTarget(route) {
+            if (route.mode === 'token') {
+                return {
+                    url: `https://aiplatform.googleapis.com/v1beta1/projects/${VERTEX_PROJECT}/locations/${route.region}/interactions`,
+                    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${getOmniToken()}`, 'x-goog-user-project': VERTEX_PROJECT }
+                };
+            }
+            if (route.mode === 'proxy') {
+                const headers = { 'Content-Type': 'application/json' };
+                const secret = getProxySecret();
+                if (secret) headers['X-Proxy-Secret'] = secret;
+                return { url: getProxyUrl(), headers };
+            }
+            return {
+                url: `https://generativelanguage.googleapis.com/v1beta/interactions?key=${encodeURIComponent(getKey())}`,
+                headers: { 'Content-Type': 'application/json' }
+            };
+        }
+        // GET one interaction by id over the job's route.
+        async function fetchInteraction(route, id) {
+            let resp;
+            if (route.mode === 'token') {
+                resp = await fetch(`https://aiplatform.googleapis.com/v1beta1/projects/${VERTEX_PROJECT}/locations/${route.region}/interactions/${encodeURIComponent(id)}`, {
+                    headers: { 'Authorization': `Bearer ${getOmniToken()}`, 'x-goog-user-project': VERTEX_PROJECT }
+                });
+            } else if (route.mode === 'proxy') {
+                const headers = { 'Content-Type': 'application/json' };
+                const secret = getProxySecret();
+                if (secret) headers['X-Proxy-Secret'] = secret;
+                resp = await fetch(getProxyUrl(), { method: 'POST', headers, body: JSON.stringify({ __get: id, __region: route.region }) });
+            } else {
+                resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/interactions/${encodeURIComponent(id)}?key=${encodeURIComponent(getKey())}`);
+            }
+            const text = await resp.text();
+            let data = null;
+            try { data = JSON.parse(text); } catch (_) {}
+            if (!resp.ok) {
+                const msg = (data && data.error && data.error.message) || `HTTP ${resp.status}`;
+                const err = new Error(msg);
+                err.httpStatus = resp.status;
+                throw err;
+            }
+            return data;
+        }
+
+        function extractOmniVideo(data) {
+            if (!data) return null;
+            if (data.output_video && (data.output_video.data || data.output_video.uri)) {
+                return { base64: data.output_video.data, uri: data.output_video.uri, mime: data.output_video.mime_type || 'video/mp4' };
+            }
+            return findVideoInObject(data);
+        }
+
+        const OMNI_DONE_STATUSES = ['completed', 'failed', 'cancelled', 'incomplete', 'budget_exceeded'];
+
+        // Poll a background interaction until done. Resumable: the id lives in
+        // IndexedDB, so this loop can be restarted at any time by resumeJobs().
+        async function pollInteractionToResult(route, id, onStatus, startMs) {
+            let data = null;
+            while (true) {
+                if (Date.now() - startMs > VIDEO_MAX_WAIT_MS) throw new Error('Timed out — use "Retrieve lost files" to check again later.');
+                if (route.mode === 'token') { try { await ensureFreshToken(); } catch (_) {} }
+                data = await fetchInteraction(route, id);
+                const st = data && data.status;
+                if (st === 'completed') break;
+                if (OMNI_DONE_STATUSES.includes(st)) {
+                    throw new Error(`Generation ${st}${data && data.error ? ': ' + (data.error.message || '') : ''}`);
+                }
+                if (onStatus) onStatus(`Rendering (Omni)… ${Math.floor((Date.now() - startMs) / 1000)}s — safe to leave, recoverable`);
+                await sleep(VIDEO_POLL_INTERVAL_MS);
+            }
+            const v = extractOmniVideo(data);
+            if (!v) { console.error('Completed but no video:', data); throw new Error('Completed but no video in response'); }
+            if (v.base64) return `data:${v.mime || 'video/mp4'};base64,${v.base64}`;
+            const dl = await fetch(v.uri);
+            if (!dl.ok) throw new Error(`Video download HTTP ${dl.status}`);
+            const blob = await dl.blob();
+            return new Promise((res, rej) => {
+                const r = new FileReader();
+                r.onload = () => res(r.result);
+                r.onerror = () => rej(new Error('Failed to read video'));
+                r.readAsDataURL(blob);
+            });
+        }
+
         async function generateOmni(prompt, opts, slot) {
             // Auto-refresh the OAuth token (silent) before the call if configured.
             slot.setStatus('Checking sign-in…');
             try { await ensureFreshToken(); } catch (e) { throw new Error('Sign-in needed: ' + (e.message || e)); }
-            const key = getKey();
             const uploads = opts.uploads;
             const hasMedia = uploads.length > 0;
             const hasVideoRef = uploads.some(m => m.isVideo);
@@ -2067,75 +2208,135 @@
             const mediaItems = uploads.map(m => ({ type: m.isVideo ? 'video' : 'image', data: m.data, mime_type: normalizeMime(m.mime) }));
             const body = {
                 model: OMNI_MODEL,
+                // background:true → the POST returns an id in ~1s and rendering
+                // continues server-side, so nothing is lost if iOS suspends us.
+                background: true,
                 input: hasMedia ? [...mediaItems, { type: 'text', text: prompt }] : prompt,
                 response_format: { type: 'video', aspect_ratio: aspect }
             };
             if (hasMedia && !hasVideoRef) body.generation_config = { video_config: { task: 'image_to_video' } };
 
-            const omniToken = getOmniToken();
-            const proxyUrl = getProxyUrl();
-            let reqUrl, reqHeaders;
-            if (omniToken) {
-                reqUrl = `https://aiplatform.googleapis.com/v1beta1/projects/${VERTEX_PROJECT}/locations/${getRegion()}/interactions`;
-                reqHeaders = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${omniToken}`, 'x-goog-user-project': VERTEX_PROJECT };
-            } else if (proxyUrl) {
-                reqUrl = proxyUrl;
-                reqHeaders = { 'Content-Type': 'application/json' };
-                const secret = getProxySecret();
-                if (secret) reqHeaders['X-Proxy-Secret'] = secret;
-                body.__region = getRegion();
-            } else {
-                reqUrl = `https://generativelanguage.googleapis.com/v1beta/interactions?key=${encodeURIComponent(key)}`;
-                reqHeaders = { 'Content-Type': 'application/json' };
-            }
+            const route = omniRoute();
+            const target = omniPostTarget(route);
+            if (route.mode === 'proxy') body.__region = route.region;
 
             const approxMb = Math.round(JSON.stringify(body).length / 1048576 * 10) / 10;
-            slot.setStatus('Rendering Omni Flash… (safe to background)');
-            const omniMeta = { type: 'video', prompt, model: 'Omni Flash', res: 'omni', ratio: aspect, timestamp: Date.now() };
+            slot.setStatus('Submitting…');
 
             let data;
             try {
-                data = await swPost(reqUrl, reqHeaders, body, omniMeta);
+                data = await swPost(target.url, target.headers, body, null);
             } catch (err) {
                 const m = (err && err.message) || 'failed';
                 const isAuth = /401|unauthenticat|invalid authentication|access token|expired|permission_denied/i.test(m);
-                if (isAuth && omniToken) throw new Error('Access token expired — get a fresh token from the OAuth Playground link in the key panel and re-paste it.');
+                if (isAuth && route.mode === 'token') throw new Error('Sign-in expired — tap "Sign in with Google" in the key panel.');
                 const isNet = /load failed|network|failed to fetch/i.test(m);
                 const sizeHint = (isNet && approxMb >= 8) ? ` Request is large (~${approxMb} MB) — use a shorter reference clip.` : '';
                 throw new Error(`Omni: ${m}${sizeHint}`);
             }
 
             const startMs = Date.now();
-            while (data && data.name && data.done !== true && !findVideoInObject(data)) {
-                if (Date.now() - startMs > VIDEO_MAX_WAIT_MS) throw new Error('Omni: timed out');
-                await sleep(VIDEO_POLL_INTERVAL_MS);
-                slot.setStatus(`Rendering (Omni)… ${Math.floor((Date.now() - startMs) / 1000)}s (safe to background)`);
-                const pr = await fetch(`https://aiplatform.googleapis.com/v1beta1/${data.name}?key=${encodeURIComponent(key)}`);
-                const pt = await pr.text();
-                try { data = JSON.parse(pt); } catch (_) {}
-                if (data && data.error) throw new Error(`Omni: ${data.error.message || 'operation failed'}`);
-            }
-
-            const result = findVideoInObject(data);
-            if (!result) { console.error('Omni raw response:', data); throw new Error('Omni: no video in response'); }
-
             let dataUrl;
-            if (result.base64) {
-                dataUrl = `data:${result.mime};base64,${result.base64}`;
+            if (data && data.status === 'completed') {
+                // Server ignored background mode and rendered synchronously.
+                const v = extractOmniVideo(data);
+                if (!v) throw new Error('Omni: no video in response');
+                dataUrl = v.base64 ? `data:${v.mime || 'video/mp4'};base64,${v.base64}` : await (async () => {
+                    const dl = await fetch(v.uri);
+                    const blob = await dl.blob();
+                    return new Promise((res) => { const r = new FileReader(); r.onload = () => res(r.result); r.readAsDataURL(blob); });
+                })();
+            } else if (data && data.id) {
+                // Persist the job BEFORE polling — this is the recovery anchor.
+                activeJobIds.add(data.id);
+                await saveJob({ id: data.id, route: route.mode, region: route.region, prompt, model: 'Omni Flash', res: 'omni', ratio: aspect, created: Date.now() });
+                try {
+                    slot.setStatus('Rendering (Omni)… — safe to leave, recoverable');
+                    dataUrl = await pollInteractionToResult(route, data.id, (t) => slot.setStatus(t), startMs);
+                    await deleteJob(data.id);
+                } finally {
+                    activeJobIds.delete(data.id);
+                }
             } else {
-                slot.setStatus('Downloading video…');
-                const dl = await fetch(`${result.uri}${result.uri.includes('?') ? '&' : '?'}key=${encodeURIComponent(key)}`);
-                if (!dl.ok) throw new Error(`Omni download HTTP ${dl.status}`);
-                const blob = await dl.blob();
-                dataUrl = await new Promise((res, rej) => {
-                    const r = new FileReader();
-                    r.onload = () => res(r.result);
-                    r.onerror = () => rej(new Error('Failed to read video'));
-                    r.readAsDataURL(blob);
-                });
+                console.error('Unexpected submit response:', data);
+                throw new Error('Omni: unexpected response (no id)');
             }
+
             return { type: 'video', dataUrl, model: 'Omni Flash', res: 'omni', ratio: aspect, cost: PRICING.video.OMNI || 0 };
         }
+
+        // ---- Job recovery ---------------------------------------------------
+        // Any interaction id stored in the jobs table but not currently being
+        // polled is checked against the server: completed → saved to history,
+        // still running → a live slot resumes polling, dead → cleaned up.
+        const activeJobIds = new Set();
+
+        async function resumeJobs() {
+            const jobs = await getAllJobs();
+            let recovered = 0;
+            for (const job of jobs) {
+                if (activeJobIds.has(job.id)) continue;
+                activeJobIds.add(job.id);
+                const route = { mode: job.route || 'token', region: job.region || getRegion() };
+                try {
+                    if (route.mode === 'token') { try { await ensureFreshToken(); } catch (_) {} }
+                    const data = await fetchInteraction(route, job.id);
+                    const st = data && data.status;
+                    if (st === 'completed') {
+                        const v = extractOmniVideo(data);
+                        if (v && (v.base64 || v.uri)) {
+                            const dataUrl = v.base64
+                                ? `data:${v.mime || 'video/mp4'};base64,${v.base64}`
+                                : await (async () => { const dl = await fetch(v.uri); const blob = await dl.blob(); return new Promise((res) => { const r = new FileReader(); r.onload = () => res(r.result); r.readAsDataURL(blob); }); })();
+                            await addToHistory({ type: 'video', dataUrl, prompt: job.prompt || '(recovered)', model: job.model || 'Omni Flash', res: job.res || 'omni', ratio: job.ratio || '—', timestamp: job.created || Date.now() });
+                            recovered++;
+                        }
+                        await deleteJob(job.id);
+                        activeJobIds.delete(job.id);
+                    } else if (OMNI_DONE_STATUSES.includes(st)) {
+                        refundCredit(PRICING.video.OMNI || 0);
+                        await deleteJob(job.id);
+                        activeJobIds.delete(job.id);
+                    } else {
+                        // Still rendering: resume in a live slot (keeps the id in
+                        // activeJobIds until it finishes so we don't double-poll).
+                        resumeJobInSlot(route, job);
+                    }
+                } catch (e) {
+                    activeJobIds.delete(job.id);
+                    if (e && e.httpStatus === 404 && Date.now() - (job.created || 0) > 24 * 3600 * 1000) {
+                        await deleteJob(job.id); // expired server-side
+                    } else {
+                        console.warn('Job check failed:', job.id, e);
+                    }
+                }
+            }
+            if (recovered > 0) refreshHistoryUI();
+            return recovered;
+        }
+
+        function resumeJobInSlot(route, job) {
+            const slot = createSlot();
+            slot.setStatus('Resuming render…');
+            (async () => {
+                try {
+                    const dataUrl = await pollInteractionToResult(route, job.id, (t) => slot.setStatus(t), Date.now() - Math.min(Date.now() - (job.created || Date.now()), VIDEO_MAX_WAIT_MS / 2));
+                    await deleteJob(job.id);
+                    slot.setVideo(dataUrl);
+                    addToHistory({ type: 'video', dataUrl, prompt: job.prompt || '(recovered)', model: job.model || 'Omni Flash', res: job.res || 'omni', ratio: job.ratio || '—', timestamp: job.created || Date.now() });
+                    playRisingBing(false);
+                } catch (e) {
+                    slot.setError(`Error: ${(e && e.message) || e}`);
+                } finally {
+                    activeJobIds.delete(job.id);
+                }
+            })();
+        }
+
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible') resumeJobs();
+        });
+        setTimeout(() => resumeJobs(), 1500);
 
         async function runGeneration(slot, prompt, opts) {
             genStarted();

@@ -45,20 +45,26 @@ const server = http.createServer((req, res) => {
             const payload = JSON.parse(body || '{}');
             const region = payload.__region || 'us-central1';
             delete payload.__region;
+            const getId = payload.__get;
 
-            const url = `https://aiplatform.googleapis.com/v1beta1/projects/${PROJECT}/locations/${region}/interactions`;
+            const base = `https://aiplatform.googleapis.com/v1beta1/projects/${PROJECT}/locations/${region}/interactions`;
 
             const client = await auth.getClient();
             const { token } = await client.getAccessToken();
 
-            const upstream = await fetch(url, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${token}`
-                },
-                body: JSON.stringify(payload)
-            });
+            // {__get: id} → retrieve an interaction (poll/recover); else create.
+            const upstream = getId
+                ? await fetch(`${base}/${encodeURIComponent(getId)}`, {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                })
+                : await fetch(base, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`
+                    },
+                    body: JSON.stringify(payload)
+                });
 
             const text = await upstream.text();
             send(res, upstream.status, text);
