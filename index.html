@@ -1926,11 +1926,13 @@
         // adds a result slot on top of the output stack, and runs independently.
 
         let activeGenerations = 0;
+        const APP_BUILD = 'b21';
         function updateGlobalStatus() {
             const s = document.getElementById('statusMsg');
             s.style.color = '#a0a0a0';
-            s.textContent = activeGenerations > 0 ? `${activeGenerations} generating…` : 'Ready';
+            s.textContent = activeGenerations > 0 ? `${activeGenerations} generating…` : `Ready · ${APP_BUILD}`;
         }
+        updateGlobalStatus();
         function genStarted() { activeGenerations++; if (activeGenerations === 1) startKeepAlive(); updateGlobalStatus(); }
         function genEnded() { activeGenerations = Math.max(0, activeGenerations - 1); if (activeGenerations === 0) stopKeepAlive(); updateGlobalStatus(); }
 
@@ -1977,6 +1979,19 @@
                     vid.controls = true; vid.playsInline = true;
                     vid.className = 'w-full h-full object-contain';
                     media.appendChild(vid);
+                    // If iOS refuses to decode, say WHY instead of the dead icon.
+                    vid.addEventListener('error', () => {
+                        const m = (url.match(/^data:([^;]+)/) || [])[1] || '?';
+                        const b64 = url.startsWith('data:') ? url.split(',')[1] || '' : '';
+                        const sniff = b64 ? sniffPayload(normalizeB64(b64.slice(0, 96))).kind : 'n/a';
+                        const kb = b64 ? Math.round(b64.length * 3 / 4 / 1024) : 0;
+                        const err = vid.error ? `code ${vid.error.code}` : 'unknown';
+                        const d = document.createElement('div');
+                        d.className = 'text-center text-[11px] text-amber-400 px-3 py-6';
+                        d.textContent = `Video won't decode (${err}) — container=${sniff}, mime=${m}, ${kb}KB. Screenshot this.`;
+                        media.innerHTML = '';
+                        media.appendChild(d);
+                    }, { once: true });
                     // Play via a blob: URL — iOS chokes on several multi-MB
                     // base64 data: sources at once (crossed-out play icon).
                     videoPlaybackUrl(url).then((pu) => {
@@ -2235,12 +2250,41 @@
             // error document that would render as an unplayable video.
             if (!base64 || base64.length < 20000) {
                 let peek = '';
-                try { peek = atob((base64 || '').slice(0, 400)); } catch (_) {}
+                try { peek = atob(normalizeB64((base64 || '').slice(0, 400))); } catch (_) {}
                 console.error('Suspicious video payload:', peek || base64);
                 throw new Error(`Video payload invalid/too small${peek ? ': ' + peek.slice(0, 160) : ''}`);
             }
-            if (!/^video\//.test(mime)) mime = 'video/mp4';
+            // Google REST APIs sometimes emit URL-safe base64 (-/_); a data:
+            // URL decoder treats those as garbage → silently unplayable video.
+            base64 = normalizeB64(base64);
+            const sniff = sniffPayload(base64);
+            if (sniff.kind === 'text') {
+                throw new Error(`Server returned text instead of video: ${sniff.head.slice(0, 160)}`);
+            }
+            if (sniff.kind === 'webm') mime = 'video/webm';
+            else if (sniff.kind === 'mp4') mime = 'video/mp4';
+            else if (!/^video\//.test(mime)) mime = 'video/mp4';
+            console.log(`Omni video: container=${sniff.kind} mime=${mime} size=${Math.round(base64.length * 3 / 4 / 1024)}KB`);
             return `data:${mime};base64,${base64}`;
+        }
+
+        // Convert URL-safe base64 to standard, strip whitespace, fix padding.
+        function normalizeB64(b64) {
+            let s = (b64 || '').replace(/[\s\r\n]/g, '').replace(/-/g, '+').replace(/_/g, '/');
+            while (s.length % 4) s += '=';
+            return s;
+        }
+
+        // Identify what the payload actually is from its first bytes.
+        function sniffPayload(b64) {
+            let head = '';
+            try { head = atob(b64.slice(0, 64)); } catch (_) { return { kind: 'undecodable', head: '' }; }
+            const b = [];
+            for (let i = 0; i < Math.min(16, head.length); i++) b.push(head.charCodeAt(i));
+            if (head.slice(4, 8) === 'ftyp') return { kind: 'mp4', head };
+            if (b[0] === 0x1A && b[1] === 0x45 && b[2] === 0xDF && b[3] === 0xA3) return { kind: 'webm', head };
+            if (/^[\s{<]/.test(head) || /error|html/i.test(head)) return { kind: 'text', head };
+            return { kind: 'unknown(' + b.slice(0, 8).map(n => n.toString(16).padStart(2, '0')).join(' ') + ')', head };
         }
 
         // iOS struggles to decode multiple multi-MB base64 <video> sources; a
