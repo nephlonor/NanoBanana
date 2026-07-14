@@ -1144,10 +1144,15 @@
                 img.classList.add('hidden');
                 img.removeAttribute('src');
                 vid.classList.remove('hidden');
-                vid.src = url;
-                vid.play().catch(() => {});
+                videoPlaybackUrl(url).then((pu) => {
+                    vid.dataset.blobUrl = pu;
+                    vid.src = pu;
+                    vid.play().catch(() => {});
+                });
             } else {
                 vid.pause();
+                revokePlaybackUrl(vid.dataset.blobUrl);
+                delete vid.dataset.blobUrl;
                 vid.removeAttribute('src');
                 vid.load();
                 vid.classList.add('hidden');
@@ -1162,6 +1167,8 @@
             const modal = document.getElementById('imageModal');
             const vid = document.getElementById('modalVid');
             vid.pause();
+            revokePlaybackUrl(vid.dataset.blobUrl);
+            delete vid.dataset.blobUrl;
             vid.removeAttribute('src');
             vid.load();
             modal.style.display = 'none';
@@ -1930,7 +1937,10 @@
         // Remove settled (done) slots so a new press leaves only the newest
         // result(s) visible; everything stays available under History.
         function pruneCompletedSlots() {
-            document.querySelectorAll('#outputStack .output-slot[data-done="1"]').forEach(el => el.remove());
+            document.querySelectorAll('#outputStack .output-slot[data-done="1"]').forEach(el => {
+                el.querySelectorAll('video[data-blob-url]').forEach(v => revokePlaybackUrl(v.dataset.blobUrl));
+                el.remove();
+            });
         }
 
         function createSlot() {
@@ -1964,15 +1974,21 @@
                 setVideo(url) {
                     spin.remove(); media.innerHTML = '';
                     const vid = document.createElement('video');
-                    vid.src = url; vid.controls = true; vid.playsInline = true;
+                    vid.controls = true; vid.playsInline = true;
                     vid.className = 'w-full h-full object-contain';
                     media.appendChild(vid);
+                    // Play via a blob: URL — iOS chokes on several multi-MB
+                    // base64 data: sources at once (crossed-out play icon).
+                    videoPlaybackUrl(url).then((pu) => {
+                        vid.src = pu;
+                        vid.dataset.blobUrl = pu;
+                        vid.play().catch(() => {});
+                    });
                     const save = document.createElement('button');
                     save.textContent = '⬇ Save to Photos';
                     save.className = 'mt-2 w-full py-2 bg-accent rounded-lg text-sm font-bold active:scale-95 transition';
                     save.addEventListener('click', () => saveVideo(url, save));
                     slot.appendChild(save);
-                    vid.play().catch(() => {});
                     slot.dataset.done = '1';
                 },
                 setInpaint(compositedUrl, rawUrl, snap, ctx) {
@@ -2180,18 +2196,70 @@
                 if (onStatus) onStatus(`Rendering (Omni)… ${Math.floor((Date.now() - startMs) / 1000)}s — safe to leave, recoverable`);
                 await sleep(VIDEO_POLL_INTERVAL_MS);
             }
+            return omniVideoToDataUrl(route, data);
+        }
+
+        // Turn a completed interaction into a playable data:video URL, with
+        // authenticated uri download and a payload sanity check (an error blob
+        // saved as "video" shows up as iOS's crossed-out play icon).
+        async function omniVideoToDataUrl(route, data) {
             const v = extractOmniVideo(data);
             if (!v) { console.error('Completed but no video:', data); throw new Error('Completed but no video in response'); }
-            if (v.base64) return `data:${v.mime || 'video/mp4'};base64,${v.base64}`;
-            const dl = await fetch(v.uri);
-            if (!dl.ok) throw new Error(`Video download HTTP ${dl.status}`);
-            const blob = await dl.blob();
-            return new Promise((res, rej) => {
-                const r = new FileReader();
-                r.onload = () => res(r.result);
-                r.onerror = () => rej(new Error('Failed to read video'));
-                r.readAsDataURL(blob);
-            });
+            let base64 = v.base64;
+            let mime = v.mime || 'video/mp4';
+            if (!base64 && v.uri) {
+                let url = v.uri;
+                const headers = {};
+                if (route.mode === 'token') {
+                    headers['Authorization'] = `Bearer ${getOmniToken()}`;
+                    headers['x-goog-user-project'] = VERTEX_PROJECT;
+                } else if (route.mode === 'key') {
+                    url += (url.includes('?') ? '&' : '?') + 'key=' + encodeURIComponent(getKey());
+                }
+                const dl = await fetch(url, { headers });
+                const ct = dl.headers.get('content-type') || '';
+                if (!dl.ok || /json|text\/html/i.test(ct)) {
+                    const t = await dl.text();
+                    throw new Error(`Video download failed (HTTP ${dl.status}, ${ct}): ${t.slice(0, 200)}`);
+                }
+                if (/video|octet-stream/i.test(ct)) mime = ct.split(';')[0].startsWith('video') ? ct.split(';')[0] : mime;
+                const blob = await dl.blob();
+                base64 = await new Promise((res, rej) => {
+                    const r = new FileReader();
+                    r.onload = () => res(String(r.result).split(',')[1]);
+                    r.onerror = () => rej(new Error('Failed to read video'));
+                    r.readAsDataURL(blob);
+                });
+            }
+            // Sanity: a real clip is MBs; a tiny payload is almost certainly an
+            // error document that would render as an unplayable video.
+            if (!base64 || base64.length < 20000) {
+                let peek = '';
+                try { peek = atob((base64 || '').slice(0, 400)); } catch (_) {}
+                console.error('Suspicious video payload:', peek || base64);
+                throw new Error(`Video payload invalid/too small${peek ? ': ' + peek.slice(0, 160) : ''}`);
+            }
+            if (!/^video\//.test(mime)) mime = 'video/mp4';
+            return `data:${mime};base64,${base64}`;
+        }
+
+        // iOS struggles to decode multiple multi-MB base64 <video> sources; a
+        // blob: URL is far lighter. Convert for playback (src of <video>).
+        const liveObjectUrls = new Set();
+        async function videoPlaybackUrl(dataUrl) {
+            if (!dataUrl || !dataUrl.startsWith('data:')) return dataUrl;
+            try {
+                const blob = await (await fetch(dataUrl)).blob();
+                const u = URL.createObjectURL(blob);
+                liveObjectUrls.add(u);
+                return u;
+            } catch (_) { return dataUrl; }
+        }
+        function revokePlaybackUrl(u) {
+            if (u && u.startsWith('blob:') && liveObjectUrls.has(u)) {
+                URL.revokeObjectURL(u);
+                liveObjectUrls.delete(u);
+            }
         }
 
         async function generateOmni(prompt, opts, slot) {
@@ -2239,13 +2307,7 @@
             let dataUrl;
             if (data && data.status === 'completed') {
                 // Server ignored background mode and rendered synchronously.
-                const v = extractOmniVideo(data);
-                if (!v) throw new Error('Omni: no video in response');
-                dataUrl = v.base64 ? `data:${v.mime || 'video/mp4'};base64,${v.base64}` : await (async () => {
-                    const dl = await fetch(v.uri);
-                    const blob = await dl.blob();
-                    return new Promise((res) => { const r = new FileReader(); r.onload = () => res(r.result); r.readAsDataURL(blob); });
-                })();
+                dataUrl = await omniVideoToDataUrl(route, data);
             } else if (data && data.id) {
                 // Persist the job BEFORE polling — this is the recovery anchor.
                 activeJobIds.add(data.id);
@@ -2283,14 +2345,9 @@
                     const data = await fetchInteraction(route, job.id);
                     const st = data && data.status;
                     if (st === 'completed') {
-                        const v = extractOmniVideo(data);
-                        if (v && (v.base64 || v.uri)) {
-                            const dataUrl = v.base64
-                                ? `data:${v.mime || 'video/mp4'};base64,${v.base64}`
-                                : await (async () => { const dl = await fetch(v.uri); const blob = await dl.blob(); return new Promise((res) => { const r = new FileReader(); r.onload = () => res(r.result); r.readAsDataURL(blob); }); })();
-                            await addToHistory({ type: 'video', dataUrl, prompt: job.prompt || '(recovered)', model: job.model || 'Omni Flash', res: job.res || 'omni', ratio: job.ratio || '—', timestamp: job.created || Date.now() });
-                            recovered++;
-                        }
+                        const dataUrl = await omniVideoToDataUrl(route, data);
+                        await addToHistory({ type: 'video', dataUrl, prompt: job.prompt || '(recovered)', model: job.model || 'Omni Flash', res: job.res || 'omni', ratio: job.ratio || '—', timestamp: job.created || Date.now() });
+                        recovered++;
                         await deleteJob(job.id);
                         activeJobIds.delete(job.id);
                     } else if (OMNI_DONE_STATUSES.includes(st)) {
