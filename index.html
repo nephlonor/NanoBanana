@@ -1442,16 +1442,25 @@
             }
         }
 
-        async function renderHistory() {
+        const HISTORY_PAGE = 10;
+        let historyShown = HISTORY_PAGE;
+
+        async function renderHistory(preservePage) {
             const grid = document.getElementById('historyGrid');
             const items = await getHistoryMeta();
             grid.innerHTML = '';
+            const moreWrap = document.getElementById('historyMore');
+            if (moreWrap) moreWrap.remove();
             if (items.length === 0) {
                 grid.innerHTML = '<p class="col-span-2 sm:col-span-3 text-center text-xs text-gray-500 py-6">No images yet.</p>';
                 return;
             }
+            // Keep however many are already expanded when refreshing in place
+            // (e.g. a new generation lands), otherwise start at one page.
+            if (!preservePage) historyShown = HISTORY_PAGE;
+            const shown = Math.min(historyShown, items.length);
             const missingThumbs = [];
-            items.forEach(item => {
+            items.slice(0, shown).forEach(item => {
                 const isVideo = item.type === 'video';
                 const card = document.createElement('div');
                 card.className = 'bg-secondary rounded-lg overflow-hidden flex flex-col';
@@ -1555,6 +1564,21 @@
                 card.appendChild(meta);
                 grid.appendChild(card);
             });
+
+            if (shown < items.length) {
+                const wrap = document.createElement('div');
+                wrap.id = 'historyMore';
+                wrap.className = 'col-span-2 sm:col-span-3 flex justify-center mt-1';
+                const btn = document.createElement('button');
+                btn.textContent = `Show more (${items.length - shown} more)`;
+                btn.className = 'py-2 px-4 bg-secondary rounded-lg text-xs font-bold active:scale-95 transition';
+                btn.addEventListener('click', () => {
+                    historyShown += HISTORY_PAGE;
+                    renderHistory(true);
+                });
+                wrap.appendChild(btn);
+                grid.appendChild(wrap);
+            }
 
             if (missingThumbs.length) backfillThumbs(missingThumbs);
         }
@@ -1683,7 +1707,7 @@
         function refreshHistoryUI() {
             updateHistoryCount();
             const hd = document.getElementById('historyDetails');
-            if (hd && hd.open) renderHistory();
+            if (hd && hd.open) renderHistory(true);
         }
 
         function extractMediaFromResult(data) {
@@ -1932,7 +1956,7 @@
         // adds a result slot on top of the output stack, and runs independently.
 
         let activeGenerations = 0;
-        const APP_BUILD = 'b23';
+        const APP_BUILD = 'b24';
         function updateGlobalStatus() {
             const s = document.getElementById('statusMsg');
             s.style.color = '#a0a0a0';
