@@ -253,8 +253,9 @@
 
     <script>
         const MODELS = {
-            PRO:   "gemini-3-pro-image-preview",
-            FLASH: "gemini-3.1-flash-image-preview"
+            // Stable IDs — the -preview aliases were retired on 2026-07-17.
+            PRO:   "gemini-3-pro-image",
+            FLASH: "gemini-3.1-flash-image"
         };
         const VIDEO_MODELS = {
             QUALITY: "veo-3.1-generate-preview",
@@ -1956,7 +1957,7 @@
         // adds a result slot on top of the output stack, and runs independently.
 
         let activeGenerations = 0;
-        const APP_BUILD = 'b24';
+        const APP_BUILD = 'b25';
         function updateGlobalStatus() {
             const s = document.getElementById('statusMsg');
             s.style.color = '#a0a0a0';
