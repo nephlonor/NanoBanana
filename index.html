@@ -1957,7 +1957,7 @@
         // adds a result slot on top of the output stack, and runs independently.
 
         let activeGenerations = 0;
-        const APP_BUILD = 'b26';
+        const APP_BUILD = 'b27';
         function updateGlobalStatus() {
             const s = document.getElementById('statusMsg');
             s.style.color = '#a0a0a0';
@@ -2429,6 +2429,14 @@
                     slot.setStatus('Rendering (Omni)… — safe to leave, recoverable');
                     dataUrl = await pollInteractionToResult(route, data.id, (t) => slot.setStatus(t), startMs);
                     await deleteJob(data.id);
+                } catch (e) {
+                    // A failed render off a video reference is nearly always
+                    // Google's likeness/safety policy (video-to-video of a
+                    // person). Name it so it isn't a mystery.
+                    if (hasVideoRef && /generation failed|failed|blocked|safety|policy/i.test(e.message || '')) {
+                        throw new Error(`${e.message} — a video reference with a person is usually blocked by Google's likeness/safety policy for video-to-video edits. Try a text prompt or an image reference instead.`);
+                    }
+                    throw e;
                 } finally {
                     activeJobIds.delete(data.id);
                 }
