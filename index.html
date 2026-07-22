@@ -1957,7 +1957,7 @@
         // adds a result slot on top of the output stack, and runs independently.
 
         let activeGenerations = 0;
-        const APP_BUILD = 'b25';
+        const APP_BUILD = 'b26';
         function updateGlobalStatus() {
             const s = document.getElementById('statusMsg');
             s.style.color = '#a0a0a0';
@@ -2239,6 +2239,31 @@
 
         const OMNI_DONE_STATUSES = ['completed', 'failed', 'cancelled', 'incomplete', 'budget_exceeded'];
 
+        // Dig a human reason out of a terminal (non-completed) interaction.
+        // Google often reports safety/policy blocks under fields other than
+        // `error`, and sometimes as a text step; surface whatever exists.
+        function omniFailureReason(status, data) {
+            const bits = [];
+            const push = (v) => { if (v && typeof v === 'string' && bits.indexOf(v) === -1) bits.push(v); };
+            if (data) {
+                push(data.error && data.error.message);
+                push(data.status_message);
+                push(data.incomplete_details && (data.incomplete_details.reason || data.incomplete_details.message));
+                push(data.incomplete_reason);
+                const steps = Array.isArray(data.steps) ? data.steps : [];
+                for (let i = steps.length - 1; i >= 0; i--) {
+                    const c = steps[i] && steps[i].content;
+                    if (Array.isArray(c)) for (const part of c) push(part && part.text);
+                }
+                push(data.blocked_reason || (data.safety && JSON.stringify(data.safety)));
+            }
+            const detail = bits.length ? ': ' + bits.join(' · ').slice(0, 300) : '';
+            if (!detail && status === 'failed') {
+                return 'Generation failed (Google gave no reason — usually a safety/policy block or a transient error). Try again, or reword the prompt / change the reference.';
+            }
+            return `Generation ${status}${detail}`;
+        }
+
         // Poll a background interaction until done. Resumable: the id lives in
         // IndexedDB, so this loop can be restarted at any time by resumeJobs().
         async function pollInteractionToResult(route, id, onStatus, startMs) {
@@ -2250,7 +2275,7 @@
                 const st = data && data.status;
                 if (st === 'completed') break;
                 if (OMNI_DONE_STATUSES.includes(st)) {
-                    throw new Error(`Generation ${st}${data && data.error ? ': ' + (data.error.message || '') : ''}`);
+                    throw new Error(omniFailureReason(st, data));
                 }
                 if (onStatus) onStatus(`Rendering (Omni)… ${Math.floor((Date.now() - startMs) / 1000)}s — safe to leave, recoverable`);
                 await sleep(VIDEO_POLL_INTERVAL_MS);
