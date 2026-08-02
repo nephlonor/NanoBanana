@@ -28,11 +28,12 @@ const CORS = {
 // The Interactions API only serves the global endpoint and the us/eu
 // multi-region endpoints — ordinary regions (us-central1, …) are rejected.
 // Multi-region traffic goes to its own host; only "global" uses the plain one.
-const OMNI_LOCATIONS = ['global', 'us', 'eu'];
-const DEFAULT_LOCATION = 'us';
+// Of those, only "global" actually serves the Omni Flash publisher model, so
+// anything else is rewritten rather than passed through.
+const DEFAULT_LOCATION = 'global';
 
 function normalizeLocation(loc) {
-    return OMNI_LOCATIONS.includes(loc) ? loc : DEFAULT_LOCATION;
+    return loc === 'global' ? loc : DEFAULT_LOCATION;
 }
 
 function interactionsBase(location) {

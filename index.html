@@ -97,7 +97,7 @@
             <div class="px-4 pb-4 pt-2">
                 <input id="apiKeyInput" type="password" autocomplete="off" placeholder="Paste your Vertex AI / Gemini API key"
                     class="w-full bg-secondary p-3 rounded-lg border-none focus:ring-2 focus:ring-teal-400 text-sm mb-2">
-                <label class="block text-[10px] text-gray-400 mt-2 mb-1">Vertex AI region <span class="text-gray-500">(image / Veo — Omni is pinned to the US multi-region)</span></label>
+                <label class="block text-[10px] text-gray-400 mt-2 mb-1">Vertex AI region <span class="text-gray-500">(image / Veo — Omni is pinned to the global endpoint)</span></label>
                 <select id="regionSelect" class="w-full bg-secondary p-2 rounded-lg border-none focus:ring-2 focus:ring-teal-400 text-sm mb-2">
                     <option value="us-central1">us-central1 (Iowa)</option>
                     <option value="us-east4">us-east4 (Virginia)</option>
@@ -290,12 +290,14 @@
         const DEFAULT_REGION = 'us-central1';
         // The Interactions API (Omni) is *not* served from ordinary regions like
         // us-central1 — it only accepts the global endpoint and the "us"/"eu"
-        // multi-region endpoints. Pin it to the US multi-region so the region
-        // picker (which drives image/Veo) can't send it an unsupported value.
-        const OMNI_LOCATION = 'us';
-        const OMNI_LOCATIONS = ['global', 'us', 'eu'];
+        // multi-region endpoints. Of those, the Omni Flash publisher model is
+        // only served from "global" ("us" answers, but 404s on the model), so
+        // pin it there, out of reach of the region picker (image / Veo).
+        const OMNI_LOCATION = 'global';
+        // Anything else (including a stale "us" stored on an older job) is
+        // rewritten, so a resume can't land on a location without the model.
         function normalizeOmniLocation(loc) {
-            return OMNI_LOCATIONS.includes(loc) ? loc : OMNI_LOCATION;
+            return loc === 'global' ? loc : OMNI_LOCATION;
         }
         // Multi-region endpoints live on their own host (aiplatform.us.rep…);
         // only "global" is served by the plain aiplatform.googleapis.com host.
@@ -1973,7 +1975,7 @@
         // adds a result slot on top of the output stack, and runs independently.
 
         let activeGenerations = 0;
-        const APP_BUILD = 'b28';
+        const APP_BUILD = 'b29';
         function updateGlobalStatus() {
             const s = document.getElementById('statusMsg');
             s.style.color = '#a0a0a0';
