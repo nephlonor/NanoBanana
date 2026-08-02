@@ -97,7 +97,7 @@
             <div class="px-4 pb-4 pt-2">
                 <input id="apiKeyInput" type="password" autocomplete="off" placeholder="Paste your Vertex AI / Gemini API key"
                     class="w-full bg-secondary p-3 rounded-lg border-none focus:ring-2 focus:ring-teal-400 text-sm mb-2">
-                <label class="block text-[10px] text-gray-400 mt-2 mb-1">Vertex AI region</label>
+                <label class="block text-[10px] text-gray-400 mt-2 mb-1">Vertex AI region <span class="text-gray-500">(image / Veo — Omni is pinned to the US multi-region)</span></label>
                 <select id="regionSelect" class="w-full bg-secondary p-2 rounded-lg border-none focus:ring-2 focus:ring-teal-400 text-sm mb-2">
                     <option value="us-central1">us-central1 (Iowa)</option>
                     <option value="us-east4">us-east4 (Virginia)</option>
@@ -288,6 +288,22 @@
         const OAUTH_SCOPE = 'https://www.googleapis.com/auth/cloud-platform';
         const VERTEX_PROJECT = 'fhnw-gemini';
         const DEFAULT_REGION = 'us-central1';
+        // The Interactions API (Omni) is *not* served from ordinary regions like
+        // us-central1 — it only accepts the global endpoint and the "us"/"eu"
+        // multi-region endpoints. Pin it to the US multi-region so the region
+        // picker (which drives image/Veo) can't send it an unsupported value.
+        const OMNI_LOCATION = 'us';
+        const OMNI_LOCATIONS = ['global', 'us', 'eu'];
+        function normalizeOmniLocation(loc) {
+            return OMNI_LOCATIONS.includes(loc) ? loc : OMNI_LOCATION;
+        }
+        // Multi-region endpoints live on their own host (aiplatform.us.rep…);
+        // only "global" is served by the plain aiplatform.googleapis.com host.
+        function omniInteractionsBase(loc) {
+            const l = normalizeOmniLocation(loc);
+            const host = l === 'global' ? 'aiplatform.googleapis.com' : `aiplatform.${l}.rep.googleapis.com`;
+            return `https://${host}/v1beta1/projects/${VERTEX_PROJECT}/locations/${l}/interactions`;
+        }
 
         let uploadedImages = [];
         let currentRes = "2K";
@@ -1957,7 +1973,7 @@
         // adds a result slot on top of the output stack, and runs independently.
 
         let activeGenerations = 0;
-        const APP_BUILD = 'b27';
+        const APP_BUILD = 'b28';
         function updateGlobalStatus() {
             const s = document.getElementById('statusMsg');
             s.style.color = '#a0a0a0';
@@ -2167,14 +2183,14 @@
         // Auth routes for the Interactions API. Jobs store the route so a
         // resume after reload uses the same path.
         function omniRoute() {
-            if (getOmniToken() || getClientId()) return { mode: 'token', region: getRegion() };
-            if (getProxyUrl()) return { mode: 'proxy', region: getRegion() };
-            return { mode: 'key', region: getRegion() };
+            if (getOmniToken() || getClientId()) return { mode: 'token', region: OMNI_LOCATION };
+            if (getProxyUrl()) return { mode: 'proxy', region: OMNI_LOCATION };
+            return { mode: 'key', region: OMNI_LOCATION };
         }
         function omniPostTarget(route) {
             if (route.mode === 'token') {
                 return {
-                    url: `https://aiplatform.googleapis.com/v1beta1/projects/${VERTEX_PROJECT}/locations/${route.region}/interactions`,
+                    url: omniInteractionsBase(route.region),
                     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${getOmniToken()}`, 'x-goog-user-project': VERTEX_PROJECT }
                 };
             }
@@ -2193,14 +2209,14 @@
         async function fetchInteraction(route, id) {
             let resp;
             if (route.mode === 'token') {
-                resp = await fetch(`https://aiplatform.googleapis.com/v1beta1/projects/${VERTEX_PROJECT}/locations/${route.region}/interactions/${encodeURIComponent(id)}`, {
+                resp = await fetch(`${omniInteractionsBase(route.region)}/${encodeURIComponent(id)}`, {
                     headers: { 'Authorization': `Bearer ${getOmniToken()}`, 'x-goog-user-project': VERTEX_PROJECT }
                 });
             } else if (route.mode === 'proxy') {
                 const headers = { 'Content-Type': 'application/json' };
                 const secret = getProxySecret();
                 if (secret) headers['X-Proxy-Secret'] = secret;
-                resp = await fetch(getProxyUrl(), { method: 'POST', headers, body: JSON.stringify({ __get: id, __region: route.region }) });
+                resp = await fetch(getProxyUrl(), { method: 'POST', headers, body: JSON.stringify({ __get: id, __region: normalizeOmniLocation(route.region) }) });
             } else {
                 resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/interactions/${encodeURIComponent(id)}?key=${encodeURIComponent(getKey())}`);
             }
@@ -2399,7 +2415,7 @@
 
             const route = omniRoute();
             const target = omniPostTarget(route);
-            if (route.mode === 'proxy') body.__region = route.region;
+            if (route.mode === 'proxy') body.__region = normalizeOmniLocation(route.region);
 
             const approxMb = Math.round(JSON.stringify(body).length / 1048576 * 10) / 10;
             slot.setStatus('Submitting…');
@@ -2460,7 +2476,9 @@
             for (const job of jobs) {
                 if (activeJobIds.has(job.id)) continue;
                 activeJobIds.add(job.id);
-                const route = { mode: job.route || 'token', region: job.region || getRegion() };
+                // Jobs saved before Omni was pinned may carry a regional value
+                // (us-central1); normalize so a resume doesn't 400.
+                const route = { mode: job.route || 'token', region: normalizeOmniLocation(job.region) };
                 try {
                     if (route.mode === 'token') { try { await ensureFreshToken(); } catch (_) {} }
                     const data = await fetchInteraction(route, job.id);
