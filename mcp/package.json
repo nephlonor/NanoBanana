@@ -1,0 +1,21 @@
+{
+  "name": "nanobanana-gcp-mcp",
+  "version": "1.0.0",
+  "description": "MCP server for managing a Google Cloud account (the things you'd click through on console.cloud.google.com) from Claude.",
+  "type": "module",
+  "main": "index.js",
+  "bin": {
+    "gcp-mcp": "index.js"
+  },
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "google-auth-library": "^9.15.0",
+    "zod": "^3.25.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
