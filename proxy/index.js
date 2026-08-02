@@ -25,6 +25,23 @@ const CORS = {
     'Access-Control-Max-Age': '3600'
 };
 
+// The Interactions API only serves the global endpoint and the us/eu
+// multi-region endpoints — ordinary regions (us-central1, …) are rejected.
+// Multi-region traffic goes to its own host; only "global" uses the plain one.
+const OMNI_LOCATIONS = ['global', 'us', 'eu'];
+const DEFAULT_LOCATION = 'us';
+
+function normalizeLocation(loc) {
+    return OMNI_LOCATIONS.includes(loc) ? loc : DEFAULT_LOCATION;
+}
+
+function interactionsBase(location) {
+    const host = location === 'global'
+        ? 'aiplatform.googleapis.com'
+        : `aiplatform.${location}.rep.googleapis.com`;
+    return `https://${host}/v1beta1/projects/${PROJECT}/locations/${location}/interactions`;
+}
+
 function send(res, status, obj) {
     res.writeHead(status, { ...CORS, 'Content-Type': 'application/json' });
     res.end(typeof obj === 'string' ? obj : JSON.stringify(obj));
@@ -43,11 +60,11 @@ const server = http.createServer((req, res) => {
             }
 
             const payload = JSON.parse(body || '{}');
-            const region = payload.__region || 'us-central1';
+            const location = normalizeLocation(payload.__region);
             delete payload.__region;
             const getId = payload.__get;
 
-            const base = `https://aiplatform.googleapis.com/v1beta1/projects/${PROJECT}/locations/${region}/interactions`;
+            const base = interactionsBase(location);
 
             const client = await auth.getClient();
             const { token } = await client.getAccessToken();
