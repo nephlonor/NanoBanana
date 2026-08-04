@@ -12,9 +12,14 @@
 const http = require('http');
 const { GoogleAuth } = require('google-auth-library');
 
-const PROJECT = process.env.VERTEX_PROJECT || 'fhnw-gemini';
+const PROJECT = process.env.VERTEX_PROJECT || '';
 const SHARED_SECRET = process.env.PROXY_SECRET || '';
 const PORT = process.env.PORT || 8080;
+
+if (!PROJECT) {
+    console.error('VERTEX_PROJECT is not set — deploy with --set-env-vars "VERTEX_PROJECT=your-project-id,…".');
+    process.exit(1);
+}
 
 const auth = new GoogleAuth({ scopes: 'https://www.googleapis.com/auth/cloud-platform' });
 

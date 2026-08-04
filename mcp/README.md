@@ -23,7 +23,7 @@ Then register it with Claude Code:
 
 ```bash
 claude mcp add gcp-console \
-  --env GCP_MCP_PROJECT=fhnw-gemini \
+  --env GCP_MCP_PROJECT=my-project-123456 \
   -- node /absolute/path/to/NanoBanana/mcp/index.js
 ```
 
@@ -35,7 +35,7 @@ For Claude Desktop, add the same thing to `claude_desktop_config.json`:
     "gcp-console": {
       "command": "node",
       "args": ["/absolute/path/to/NanoBanana/mcp/index.js"],
-      "env": { "GCP_MCP_PROJECT": "fhnw-gemini" }
+      "env": { "GCP_MCP_PROJECT": "my-project-123456" }
     }
   }
 }
@@ -87,7 +87,7 @@ Standard usage cost. Google starts writing to a table named like
 `gcp_billing_export_v1_01ABCD_234567_89EFGH`, then point the server at it:
 
 ```
-GCP_MCP_BILLING_TABLE=fhnw-gemini.billing_export.gcp_billing_export_v1_01ABCD_234567_89EFGH
+GCP_MCP_BILLING_TABLE=my-project-123456.billing_export.gcp_billing_export_v1_01ABCD_234567_89EFGH
 ```
 
 Two caveats worth knowing before the first weekly review:

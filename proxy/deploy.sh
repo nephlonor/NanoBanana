@@ -3,8 +3,15 @@
 #   bash deploy.sh
 set -e
 
-PROJECT=fhnw-gemini
-REGION=us-central1
+# Project to deploy into. Pass it in, or let gcloud's current config decide:
+#   PROJECT=my-project-123456 bash deploy.sh
+PROJECT="${PROJECT:-$(gcloud config get-value project 2>/dev/null)}"
+REGION="${REGION:-us-central1}"
+
+if [ -z "$PROJECT" ] || [ "$PROJECT" = "(unset)" ]; then
+  echo "No project. Run:  PROJECT=my-project-123456 bash deploy.sh" >&2
+  exit 1
+fi
 SERVICE=nanobanana-omni-proxy
 
 echo "▶ Setting project to $PROJECT…"

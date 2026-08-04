@@ -21,10 +21,10 @@ SECRET="choose-a-long-random-string"
 
 gcloud run deploy nanobanana-omni-proxy \
   --source . \
-  --project fhnw-gemini \
+  --project my-project-123456 \
   --region us-central1 \
   --allow-unauthenticated \
-  --set-env-vars "VERTEX_PROJECT=fhnw-gemini,PROXY_SECRET=$SECRET"
+  --set-env-vars "VERTEX_PROJECT=my-project-123456,PROXY_SECRET=$SECRET"
 ```
 
 When it finishes it prints a **Service URL** like
@@ -39,12 +39,12 @@ to be explicit:
 ```bash
 # Find the service account the service runs as:
 gcloud run services describe nanobanana-omni-proxy \
-  --project fhnw-gemini --region us-central1 \
+  --project my-project-123456 --region us-central1 \
   --format 'value(spec.template.spec.serviceAccountName)'
 
 # Grant it Vertex AI User (replace SA with the value printed above, or the
 # default: PROJECT_NUMBER-compute@developer.gserviceaccount.com):
-gcloud projects add-iam-policy-binding fhnw-gemini \
+gcloud projects add-iam-policy-binding my-project-123456 \
   --member "serviceAccount:SA" \
   --role roles/aiplatform.user
 ```
@@ -53,6 +53,7 @@ gcloud projects add-iam-policy-binding fhnw-gemini \
 
 In the app's API-key panel, fill in:
 
+- **Google Cloud project ID** → the project you deployed into
 - **Omni proxy URL** → the Service URL from the deploy step
 - **Omni proxy secret** → the same `SECRET` string you chose above
 
