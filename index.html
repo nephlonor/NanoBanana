@@ -389,7 +389,12 @@
                 if (!c) return reject(new Error('Enter your OAuth Client ID and Save first (and wait a moment for Google to load).'));
                 _tokenResolve = resolve; _tokenReject = reject;
                 try {
-                    c.requestAccessToken({ prompt: interactive ? 'consent' : '' });
+                    // select_account on the interactive path: without it Google
+                    // silently uses whichever account the browser is already
+                    // signed into, which is wrong as soon as the project moves
+                    // to a different Google account. Silent refreshes stay
+                    // prompt-less so they don't pop a chooser mid-generation.
+                    c.requestAccessToken({ prompt: interactive ? 'select_account consent' : '' });
                 } catch (e) {
                     _tokenResolve = _tokenReject = null;
                     reject(e);
@@ -1994,7 +1999,7 @@
         // adds a result slot on top of the output stack, and runs independently.
 
         let activeGenerations = 0;
-        const APP_BUILD = 'b30';
+        const APP_BUILD = 'b31';
         function updateGlobalStatus() {
             const s = document.getElementById('statusMsg');
             s.style.color = '#a0a0a0';
