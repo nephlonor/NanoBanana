@@ -92,11 +92,9 @@
 
         <details id="keyDetails" class="mb-4 bg-input rounded-xl border border-gray-700">
             <summary class="px-4 py-3 cursor-pointer text-sm font-semibold select-none">
-                <span id="keyStatus">API Key: not set</span>
+                <span id="keyStatus">Sign-in: not set</span>
             </summary>
             <div class="px-4 pb-4 pt-2">
-                <input id="apiKeyInput" type="password" autocomplete="off" placeholder="Paste your Vertex AI / Gemini API key"
-                    class="w-full bg-secondary p-3 rounded-lg border-none focus:ring-2 focus:ring-teal-400 text-sm mb-2">
                 <label class="block text-[10px] text-gray-400 mt-2 mb-1">Google Cloud project ID <span class="text-gray-500">(from the console — not the display name)</span></label>
                 <input id="projectIdInput" type="text" autocomplete="off" spellcheck="false" placeholder="my-project-123456"
                     class="w-full bg-secondary p-2 rounded-lg border-none focus:ring-2 focus:ring-teal-400 text-sm mb-2 font-mono">
@@ -134,7 +132,7 @@
                     <button onclick="saveKey()" class="flex-1 py-2 bg-accent rounded-lg text-sm font-bold active:scale-95 transition">Save</button>
                     <button onclick="clearKey()" class="flex-1 py-2 bg-secondary rounded-lg text-sm font-bold active:scale-95 transition">Clear</button>
                 </div>
-                <p class="text-[10px] text-gray-500 mt-2">Project ID and key are stored only in this browser. Without a proxy, Omni uses the Gemini API (paid credits); with the proxy it uses Vertex (free credits).</p>
+                <p class="text-[10px] text-gray-500 mt-2">Everything authenticates with your Google sign-in — settings are stored only in this browser. Omni runs on Vertex either way: signed in it bills your own project, through the proxy it bills the project the proxy runs as.</p>
             </div>
         </details>
 
@@ -281,7 +279,6 @@
             { value: "21:9", label: "21:9 (Cinematic)", ratio: 21/9 }
         ];
 
-        const KEY_STORAGE = 'nanobanana_api_key';
         const REGION_STORAGE = 'nanobanana_region';
         const PROXY_URL_STORAGE = 'nanobanana_proxy_url';
         const PROXY_SECRET_STORAGE = 'nanobanana_proxy_secret';
@@ -290,7 +287,7 @@
         const TOKEN_EXPIRY_STORAGE = 'nanobanana_token_expiry';
         const OAUTH_SCOPE = 'https://www.googleapis.com/auth/cloud-platform';
         const PROJECT_STORAGE = 'nanobanana_project';
-        // The project lives in settings next to the API key, not in the source,
+        // The project lives in settings rather than in the source,
         // so switching Google Cloud accounts is a field edit rather than a
         // redeploy. No fallback on purpose: an empty box must fail loudly
         // instead of quietly billing whatever project used to be hardcoded.
@@ -334,7 +331,6 @@
             ratioSelect.appendChild(opt);
         });
 
-        function getKey() { return localStorage.getItem(KEY_STORAGE) || ''; }
         function getRegion() { return localStorage.getItem(REGION_STORAGE) || DEFAULT_REGION; }
         function getProxyUrl() { return (localStorage.getItem(PROXY_URL_STORAGE) || '').trim(); }
         function getProxySecret() { return localStorage.getItem(PROXY_SECRET_STORAGE) || ''; }
@@ -436,27 +432,17 @@
         function vertexOperationUrl(opName) {
             return `https://aiplatform.googleapis.com/v1/${opName}`;
         }
-        function withKey(url) {
-            const sep = url.includes('?') ? '&' : '?';
-            return `${url}${sep}key=${encodeURIComponent(getKey())}`;
-        }
-
-        // aiplatform.googleapis.com only accepts an API key when the project is
-        // in Vertex AI Express Mode; an ordinary Cloud console key is rejected
-        // with "API keys are not supported by this API". An OAuth token always
-        // works, so prefer one whenever the Omni sign-in has produced it and
-        // fall back to the key otherwise.
-        function haveOauth() { return !!(getClientId() || getOmniToken()); }
+        // aiplatform.googleapis.com does not accept API keys at all — it wants
+        // an OAuth2 token asserting a principal, so every Vertex call goes
+        // through here.
         async function vertexAuth(url) {
-            if (!haveOauth()) return { url: withKey(url), headers: {} };
             await ensureFreshToken();
             const token = getOmniToken();
-            if (!token) return { url: withKey(url), headers: {} };
+            if (!token) throw new Error('Not signed in — open the panel and sign in with Google.');
             return { url, headers: { 'Authorization': `Bearer ${token}`, 'x-goog-user-project': requireProject() } };
         }
 
         function updateKeyStatus() {
-            const k = getKey();
             const region = getRegion();
             const status = document.getElementById('keyStatus');
             const details = document.getElementById('keyDetails');
@@ -474,15 +460,16 @@
             if (omniTokenIn) omniTokenIn.value = getOmniToken();
             if (clientIdIn) clientIdIn.value = getClientId();
             const project = getProject();
-            if (k && project) {
-                const omni = getClientId() ? ' · omni:auto' : (getOmniToken() ? ' · omni:token' : (getProxyUrl() ? ' · omni:proxy' : ''));
-                status.textContent = `API Key: set (…${k.slice(-4)}) · ${project} · ${region}${omni}`;
+            const signedIn = !!(getClientId() || getOmniToken() || getProxyUrl());
+            if (signedIn && project) {
+                const omni = getClientId() ? 'auto' : (getOmniToken() ? 'token' : 'proxy');
+                status.textContent = `Signed in (${omni}) · ${project} · ${region}`;
                 details.open = false;
                 details.classList.add('mt-2');
                 details.classList.remove('mb-4');
                 container.appendChild(details);
             } else {
-                status.textContent = k ? 'Project ID: not set — tap to add' : 'API Key: not set — tap to add';
+                status.textContent = signedIn ? 'Project ID: not set — tap to add' : 'Sign-in required — tap to set up';
                 details.open = true;
                 details.classList.add('mb-4');
                 details.classList.remove('mt-2');
@@ -491,13 +478,8 @@
         }
 
         function saveKey() {
-            const v = document.getElementById('apiKeyInput').value.trim();
             const region = document.getElementById('regionSelect').value || DEFAULT_REGION;
             localStorage.setItem(REGION_STORAGE, region);
-            if (v) {
-                localStorage.setItem(KEY_STORAGE, v);
-                document.getElementById('apiKeyInput').value = '';
-            }
             const proj = document.getElementById('projectIdInput').value.trim();
             if (proj) localStorage.setItem(PROJECT_STORAGE, proj); else localStorage.removeItem(PROJECT_STORAGE);
             const purl = document.getElementById('proxyUrlInput').value.trim();
@@ -513,7 +495,6 @@
         }
 
         function clearKey() {
-            localStorage.removeItem(KEY_STORAGE);
             localStorage.removeItem(PROJECT_STORAGE);
             localStorage.removeItem(REGION_STORAGE);
             localStorage.removeItem(PROXY_URL_STORAGE);
@@ -1983,9 +1964,9 @@
         }
 
         const OMNI_MODEL = 'gemini-omni-flash-preview';
-        // Omni uses the Interactions API. Vertex's interactions endpoint needs
-        // OAuth (via the Cloud Run proxy → free credits); without a proxy we
-        // call the Gemini Developer API directly with the key (paid credits).
+        // Omni uses the Interactions API, which needs OAuth — either the
+        // browser's own token or the Cloud Run proxy signing as a service
+        // account. There is no API-key path: Vertex rejects keys outright.
 
         // Interactions API returns steps[].content[] items like
         //   { type:"video", mime_type:"video/mp4", data:"<base64>" }  (or a uri).
@@ -2028,7 +2009,7 @@
         // adds a result slot on top of the output stack, and runs independently.
 
         let activeGenerations = 0;
-        const APP_BUILD = 'b32';
+        const APP_BUILD = 'b33';
         function updateGlobalStatus() {
             const s = document.getElementById('statusMsg');
             s.style.color = '#a0a0a0';
@@ -2239,8 +2220,7 @@
         // resume after reload uses the same path.
         function omniRoute() {
             if (getOmniToken() || getClientId()) return { mode: 'token', region: OMNI_LOCATION };
-            if (getProxyUrl()) return { mode: 'proxy', region: OMNI_LOCATION };
-            return { mode: 'key', region: OMNI_LOCATION };
+            return { mode: 'proxy', region: OMNI_LOCATION };
         }
         function omniPostTarget(route) {
             if (route.mode === 'token') {
@@ -2249,16 +2229,10 @@
                     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${getOmniToken()}`, 'x-goog-user-project': requireProject() }
                 };
             }
-            if (route.mode === 'proxy') {
-                const headers = { 'Content-Type': 'application/json' };
-                const secret = getProxySecret();
-                if (secret) headers['X-Proxy-Secret'] = secret;
-                return { url: getProxyUrl(), headers };
-            }
-            return {
-                url: `https://generativelanguage.googleapis.com/v1beta/interactions?key=${encodeURIComponent(getKey())}`,
-                headers: { 'Content-Type': 'application/json' }
-            };
+            const headers = { 'Content-Type': 'application/json' };
+            const secret = getProxySecret();
+            if (secret) headers['X-Proxy-Secret'] = secret;
+            return { url: getProxyUrl(), headers };
         }
         // GET one interaction by id over the job's route.
         async function fetchInteraction(route, id) {
@@ -2267,13 +2241,11 @@
                 resp = await fetch(`${omniInteractionsBase(route.region)}/${encodeURIComponent(id)}`, {
                     headers: { 'Authorization': `Bearer ${getOmniToken()}`, 'x-goog-user-project': requireProject() }
                 });
-            } else if (route.mode === 'proxy') {
+            } else {
                 const headers = { 'Content-Type': 'application/json' };
                 const secret = getProxySecret();
                 if (secret) headers['X-Proxy-Secret'] = secret;
                 resp = await fetch(getProxyUrl(), { method: 'POST', headers, body: JSON.stringify({ __get: id, __region: normalizeOmniLocation(route.region) }) });
-            } else {
-                resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/interactions/${encodeURIComponent(id)}?key=${encodeURIComponent(getKey())}`);
             }
             const text = await resp.text();
             let data = null;
@@ -2367,8 +2339,6 @@
                 if (route.mode === 'token') {
                     headers['Authorization'] = `Bearer ${getOmniToken()}`;
                     headers['x-goog-user-project'] = requireProject();
-                } else if (route.mode === 'key') {
-                    url += (url.includes('?') ? '&' : '?') + 'key=' + encodeURIComponent(getKey());
                 }
                 const dl = await fetch(url, { headers });
                 const ct = dl.headers.get('content-type') || '';
@@ -2639,10 +2609,10 @@
         function handleGenerate() {
             unlockAudio();
             const prompt = document.getElementById('prompt').value;
-            if (!getKey() && !getOmniToken() && !getProxyUrl()) {
+            if (!getClientId() && !getOmniToken() && !getProxyUrl()) {
                 playRisingBing(true);
                 document.getElementById('keyDetails').open = true;
-                return alert('API key required. Add it in the panel.');
+                return alert('Sign in with Google first — open the panel and set your OAuth Client ID.');
             }
             // Everything except proxied Omni hits a project-scoped Vertex URL,
             // so catch a missing project here rather than mid-generation.
