@@ -97,6 +97,9 @@
             <div class="px-4 pb-4 pt-2">
                 <input id="apiKeyInput" type="password" autocomplete="off" placeholder="Paste your Vertex AI / Gemini API key"
                     class="w-full bg-secondary p-3 rounded-lg border-none focus:ring-2 focus:ring-teal-400 text-sm mb-2">
+                <label class="block text-[10px] text-gray-400 mt-2 mb-1">Google Cloud project ID <span class="text-gray-500">(from the console — not the display name)</span></label>
+                <input id="projectIdInput" type="text" autocomplete="off" spellcheck="false" placeholder="my-project-123456"
+                    class="w-full bg-secondary p-2 rounded-lg border-none focus:ring-2 focus:ring-teal-400 text-sm mb-2 font-mono">
                 <label class="block text-[10px] text-gray-400 mt-2 mb-1">Vertex AI region <span class="text-gray-500">(image / Veo — Omni is pinned to the global endpoint)</span></label>
                 <select id="regionSelect" class="w-full bg-secondary p-2 rounded-lg border-none focus:ring-2 focus:ring-teal-400 text-sm mb-2">
                     <option value="us-central1">us-central1 (Iowa)</option>
@@ -131,7 +134,7 @@
                     <button onclick="saveKey()" class="flex-1 py-2 bg-accent rounded-lg text-sm font-bold active:scale-95 transition">Save</button>
                     <button onclick="clearKey()" class="flex-1 py-2 bg-secondary rounded-lg text-sm font-bold active:scale-95 transition">Clear</button>
                 </div>
-                <p class="text-[10px] text-gray-500 mt-2">Vertex AI project <span class="text-gray-300 font-mono">fhnw-gemini</span>. Key stored only in this browser. Without a proxy, Omni uses the Gemini API (paid credits); with the proxy it uses Vertex (free credits).</p>
+                <p class="text-[10px] text-gray-500 mt-2">Project ID and key are stored only in this browser. Without a proxy, Omni uses the Gemini API (paid credits); with the proxy it uses Vertex (free credits).</p>
             </div>
         </details>
 
@@ -286,7 +289,17 @@
         const OAUTH_CLIENT_ID_STORAGE = 'nanobanana_oauth_client_id';
         const TOKEN_EXPIRY_STORAGE = 'nanobanana_token_expiry';
         const OAUTH_SCOPE = 'https://www.googleapis.com/auth/cloud-platform';
-        const VERTEX_PROJECT = 'fhnw-gemini';
+        const PROJECT_STORAGE = 'nanobanana_project';
+        // The project lives in settings next to the API key, not in the source,
+        // so switching Google Cloud accounts is a field edit rather than a
+        // redeploy. No fallback on purpose: an empty box must fail loudly
+        // instead of quietly billing whatever project used to be hardcoded.
+        function getProject() { return (localStorage.getItem(PROJECT_STORAGE) || '').trim(); }
+        function requireProject() {
+            const p = getProject();
+            if (!p) throw new Error('No Google Cloud project set — open the key panel and enter your project ID.');
+            return p;
+        }
         const DEFAULT_REGION = 'us-central1';
         // The Interactions API (Omni) is *not* served from ordinary regions like
         // us-central1 — it only accepts the global endpoint and the "us"/"eu"
@@ -304,7 +317,7 @@
         function omniInteractionsBase(loc) {
             const l = normalizeOmniLocation(loc);
             const host = l === 'global' ? 'aiplatform.googleapis.com' : `aiplatform.${l}.rep.googleapis.com`;
-            return `https://${host}/v1beta1/projects/${VERTEX_PROJECT}/locations/${l}/interactions`;
+            return `https://${host}/v1beta1/projects/${requireProject()}/locations/${l}/interactions`;
         }
 
         let uploadedImages = [];
@@ -413,7 +426,7 @@
 
         function vertexEndpoint(modelId, verb) {
             const region = getRegion();
-            return `https://aiplatform.googleapis.com/v1/projects/${VERTEX_PROJECT}/locations/${region}/publishers/google/models/${encodeURIComponent(modelId)}:${verb}`;
+            return `https://aiplatform.googleapis.com/v1/projects/${requireProject()}/locations/${region}/publishers/google/models/${encodeURIComponent(modelId)}:${verb}`;
         }
         function vertexOperationUrl(opName) {
             return `https://aiplatform.googleapis.com/v1/${opName}`;
@@ -431,6 +444,8 @@
             const container = details.parentElement;
             const regionSel = document.getElementById('regionSelect');
             if (regionSel) regionSel.value = region;
+            const projectIn = document.getElementById('projectIdInput');
+            if (projectIn) projectIn.value = getProject();
             const proxyUrlIn = document.getElementById('proxyUrlInput');
             const proxySecretIn = document.getElementById('proxySecretInput');
             const omniTokenIn = document.getElementById('omniTokenInput');
@@ -439,15 +454,16 @@
             if (proxySecretIn) proxySecretIn.value = getProxySecret();
             if (omniTokenIn) omniTokenIn.value = getOmniToken();
             if (clientIdIn) clientIdIn.value = getClientId();
-            if (k) {
+            const project = getProject();
+            if (k && project) {
                 const omni = getClientId() ? ' · omni:auto' : (getOmniToken() ? ' · omni:token' : (getProxyUrl() ? ' · omni:proxy' : ''));
-                status.textContent = `API Key: set (…${k.slice(-4)}) · ${region}${omni}`;
+                status.textContent = `API Key: set (…${k.slice(-4)}) · ${project} · ${region}${omni}`;
                 details.open = false;
                 details.classList.add('mt-2');
                 details.classList.remove('mb-4');
                 container.appendChild(details);
             } else {
-                status.textContent = 'API Key: not set — tap to add';
+                status.textContent = k ? 'Project ID: not set — tap to add' : 'API Key: not set — tap to add';
                 details.open = true;
                 details.classList.add('mb-4');
                 details.classList.remove('mt-2');
@@ -463,6 +479,8 @@
                 localStorage.setItem(KEY_STORAGE, v);
                 document.getElementById('apiKeyInput').value = '';
             }
+            const proj = document.getElementById('projectIdInput').value.trim();
+            if (proj) localStorage.setItem(PROJECT_STORAGE, proj); else localStorage.removeItem(PROJECT_STORAGE);
             const purl = document.getElementById('proxyUrlInput').value.trim();
             const psec = document.getElementById('proxySecretInput').value;
             const otok = document.getElementById('omniTokenInput').value.trim();
@@ -477,6 +495,7 @@
 
         function clearKey() {
             localStorage.removeItem(KEY_STORAGE);
+            localStorage.removeItem(PROJECT_STORAGE);
             localStorage.removeItem(REGION_STORAGE);
             localStorage.removeItem(PROXY_URL_STORAGE);
             localStorage.removeItem(PROXY_SECRET_STORAGE);
@@ -1975,7 +1994,7 @@
         // adds a result slot on top of the output stack, and runs independently.
 
         let activeGenerations = 0;
-        const APP_BUILD = 'b29';
+        const APP_BUILD = 'b30';
         function updateGlobalStatus() {
             const s = document.getElementById('statusMsg');
             s.style.color = '#a0a0a0';
@@ -2193,7 +2212,7 @@
             if (route.mode === 'token') {
                 return {
                     url: omniInteractionsBase(route.region),
-                    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${getOmniToken()}`, 'x-goog-user-project': VERTEX_PROJECT }
+                    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${getOmniToken()}`, 'x-goog-user-project': requireProject() }
                 };
             }
             if (route.mode === 'proxy') {
@@ -2212,7 +2231,7 @@
             let resp;
             if (route.mode === 'token') {
                 resp = await fetch(`${omniInteractionsBase(route.region)}/${encodeURIComponent(id)}`, {
-                    headers: { 'Authorization': `Bearer ${getOmniToken()}`, 'x-goog-user-project': VERTEX_PROJECT }
+                    headers: { 'Authorization': `Bearer ${getOmniToken()}`, 'x-goog-user-project': requireProject() }
                 });
             } else if (route.mode === 'proxy') {
                 const headers = { 'Content-Type': 'application/json' };
@@ -2314,7 +2333,7 @@
                 const headers = {};
                 if (route.mode === 'token') {
                     headers['Authorization'] = `Bearer ${getOmniToken()}`;
-                    headers['x-goog-user-project'] = VERTEX_PROJECT;
+                    headers['x-goog-user-project'] = requireProject();
                 } else if (route.mode === 'key') {
                     url += (url.includes('?') ? '&' : '?') + 'key=' + encodeURIComponent(getKey());
                 }
@@ -2591,6 +2610,14 @@
                 playRisingBing(true);
                 document.getElementById('keyDetails').open = true;
                 return alert('API key required. Add it in the panel.');
+            }
+            // Everything except proxied Omni hits a project-scoped Vertex URL,
+            // so catch a missing project here rather than mid-generation.
+            const needsProject = currentMode !== 'VIDEO' || currentVideoModel !== 'OMNI' || omniRoute().mode === 'token';
+            if (needsProject && !getProject()) {
+                playRisingBing(true);
+                document.getElementById('keyDetails').open = true;
+                return alert('Google Cloud project ID required. Add it in the panel.');
             }
             if (!prompt) { playRisingBing(true); return alert('Prompt required'); }
             if (currentMode === 'INPAINT') {
