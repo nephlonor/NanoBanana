@@ -441,6 +441,20 @@
             return `${url}${sep}key=${encodeURIComponent(getKey())}`;
         }
 
+        // aiplatform.googleapis.com only accepts an API key when the project is
+        // in Vertex AI Express Mode; an ordinary Cloud console key is rejected
+        // with "API keys are not supported by this API". An OAuth token always
+        // works, so prefer one whenever the Omni sign-in has produced it and
+        // fall back to the key otherwise.
+        function haveOauth() { return !!(getClientId() || getOmniToken()); }
+        async function vertexAuth(url) {
+            if (!haveOauth()) return { url: withKey(url), headers: {} };
+            await ensureFreshToken();
+            const token = getOmniToken();
+            if (!token) return { url: withKey(url), headers: {} };
+            return { url, headers: { 'Authorization': `Bearer ${token}`, 'x-goog-user-project': requireProject() } };
+        }
+
         function updateKeyStatus() {
             const k = getKey();
             const region = getRegion();
@@ -1832,6 +1846,16 @@
         // POST through the service worker when available, so the request
         // survives the page being backgrounded/suspended by iOS. Resolves with
         // the parsed JSON response; rejects with an Error on HTTP/API failure.
+        // Vertex 403s often come back with an empty or non-JSON body; without
+        // the raw snippet the UI shows a bare "HTTP 403" that says nothing
+        // about which permission or API is missing.
+        function httpErrorMessage(status, text, data) {
+            const structured = data && data.error && data.error.message;
+            if (structured) return structured;
+            const snippet = (text || '').trim().slice(0, 200);
+            return snippet ? `HTTP ${status}: ${snippet}` : `HTTP ${status}`;
+        }
+
         async function swPost(url, headers, body, meta) {
             const controller = await ensureServiceWorker();
             if (controller) {
@@ -1852,7 +1876,7 @@
             let data = null;
             try { data = JSON.parse(text); } catch (_) {}
             if (!response.ok) {
-                throw new Error((data && data.error && data.error.message) || `HTTP ${response.status}`);
+                throw new Error(httpErrorMessage(response.status, text, data));
             }
             if (data && data.error) throw new Error(data.error.message || 'API Error');
             return data;
@@ -1860,8 +1884,8 @@
 
         async function callApi(modelKey, body, meta) {
             const modelId = MODELS[modelKey];
-            const url = withKey(vertexEndpoint(modelId, 'generateContent'));
-            return swPost(url, {}, body, meta);
+            const { url, headers } = await vertexAuth(vertexEndpoint(modelId, 'generateContent'));
+            return swPost(url, headers, body, meta);
         }
 
         async function attemptGenerate(modelKey, parts, meta, opts) {
@@ -1880,15 +1904,17 @@
         }
 
         async function startVideoOperation(modelId, body) {
-            const resp = await fetch(withKey(vertexEndpoint(modelId, 'predictLongRunning')), {
+            const { url, headers } = await vertexAuth(vertexEndpoint(modelId, 'predictLongRunning'));
+            const resp = await fetch(url, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 'Content-Type': 'application/json', ...headers },
                 body: JSON.stringify(body)
             });
             if (!resp.ok) {
-                let msg = `HTTP ${resp.status}`;
-                try { const e = await resp.json(); if (e.error && e.error.message) msg = e.error.message; } catch (_) {}
-                throw new Error(msg);
+                const t = await resp.text();
+                let e = null;
+                try { e = JSON.parse(t); } catch (_) {}
+                throw new Error(httpErrorMessage(resp.status, t, e));
             }
             const data = await resp.json();
             if (!data.name) throw new Error('Video API returned no operation name');
@@ -1903,11 +1929,13 @@
                 await sleep(VIDEO_POLL_INTERVAL_MS);
                 const elapsed = Math.floor((Date.now() - startMs) / 1000);
                 if (onStatus) onStatus(`Rendering video… ${elapsed}s (safe to background)`);
-                const resp = await fetch(withKey(vertexOperationUrl(opName)));
+                const op = await vertexAuth(vertexOperationUrl(opName));
+                const resp = await fetch(op.url, { headers: op.headers });
                 if (!resp.ok) {
-                    let msg = `HTTP ${resp.status}`;
-                    try { const e = await resp.json(); if (e.error && e.error.message) msg = e.error.message; } catch (_) {}
-                    throw new Error(msg);
+                    const t = await resp.text();
+                    let e = null;
+                    try { e = JSON.parse(t); } catch (_) {}
+                    throw new Error(httpErrorMessage(resp.status, t, e));
                 }
                 const data = await resp.json();
                 if (data.done) {
@@ -1939,10 +1967,11 @@
         }
 
         async function fetchVideoAsDataUrl(uri) {
-            const url = uri.startsWith('gs://')
-                ? withKey(`https://storage.googleapis.com/${uri.slice(5)}`)
-                : withKey(uri);
-            const resp = await fetch(url);
+            const raw = uri.startsWith('gs://')
+                ? `https://storage.googleapis.com/${uri.slice(5)}`
+                : uri;
+            const { url, headers } = await vertexAuth(raw);
+            const resp = await fetch(url, { headers });
             if (!resp.ok) throw new Error(`Video download HTTP ${resp.status}`);
             const blob = await resp.blob();
             return new Promise((resolve, reject) => {
@@ -1999,7 +2028,7 @@
         // adds a result slot on top of the output stack, and runs independently.
 
         let activeGenerations = 0;
-        const APP_BUILD = 'b31';
+        const APP_BUILD = 'b32';
         function updateGlobalStatus() {
             const s = document.getElementById('statusMsg');
             s.style.color = '#a0a0a0';
@@ -2250,8 +2279,7 @@
             let data = null;
             try { data = JSON.parse(text); } catch (_) {}
             if (!resp.ok) {
-                const msg = (data && data.error && data.error.message) || `HTTP ${resp.status}`;
-                const err = new Error(msg);
+                const err = new Error(httpErrorMessage(resp.status, text, data));
                 err.httpStatus = resp.status;
                 throw err;
             }
