@@ -35,10 +35,15 @@ async function runGenerate({ id, url, headers, body, meta }) {
             headers: { 'Content-Type': 'application/json', ...(headers || {}) },
             body: JSON.stringify(body)
         });
+        const text = await response.text();
         let data = null;
-        try { data = await response.json(); } catch (_) {}
+        try { data = JSON.parse(text); } catch (_) {}
         if (!response.ok) {
-            const errMsg = (data && data.error && data.error.message) || `HTTP ${response.status}`;
+            // Mirror the page's httpErrorMessage(): a bare status code hides
+            // which permission or API the call actually tripped over.
+            const structured = data && data.error && data.error.message;
+            const snippet = (text || '').trim().slice(0, 200);
+            const errMsg = structured || (snippet ? `HTTP ${response.status}: ${snippet}` : `HTTP ${response.status}`);
             result = { id, ok: false, error: errMsg, meta };
         } else if (data && data.error) {
             result = { id, ok: false, error: data.error.message || 'API Error', meta };
