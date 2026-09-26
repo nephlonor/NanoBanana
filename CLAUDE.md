@@ -25,6 +25,11 @@ Two different location rules apply, and mixing them up is a recurring bug:
   don't carry the Omni Flash publisher model. `proxy/index.js` normalizes the
   location the same way.
 
+Omni model IDs differ between the two APIs: the Gemini API's GA ID is
+`gemini-omni-1.1-flash`, but Vertex only serves `gemini-omni-1.1-flash-preview`
+(global). The old `gemini-omni-flash-preview` is switched off on 2026-09-30;
+the app falls back to it only when a project isn't allowed 1.1.
+
 Multi-region endpoints, if ever needed, live on their own host
 (`aiplatform.us.rep.googleapis.com`) — the plain host with `locations/us` is
 not valid.
