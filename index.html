@@ -1395,29 +1395,17 @@
             }).catch(err => alert('Could not load result as base: ' + err.message));
         }
 
-        // Restore an inpaint from history for further mask/feather tuning:
-        // base + mask go back into the editor, the feather slider is set to
-        // the stored value, and a live result slot with Re-blend is recreated.
+        // Tune an inpaint from history: recreate its result slot and open the
+        // popup mask editor right away (live preview, no API call).
         async function tuneInpaintFromHistory(id) {
             const rec = await getHistoryItem(id);
-            if (!rec || !rec.inpaint) { alert('This entry has no stored tuning data.'); return; }
+            if (!rec || !rec.inpaint || !rec.inpaint.raw) { alert('This entry has no stored tuning data.'); return; }
             if (typeof tbView !== 'undefined' && tbView === 'TABLE') await setView('CLASSIC');
             const t = rec.inpaint;
-            setMode('INPAINT');
-            try {
-                await loadInpaintBase(t.base);
-                const maskImg = await loadImageEl(t.mask);
-                maskCtx().drawImage(maskImg, 0, 0, maskCanvas.width, maskCanvas.height);
-            } catch (e) {
-                alert('Could not restore editor state: ' + (e.message || e));
-                return;
-            }
-            document.getElementById('featherRange').value = t.feather || 0;
             const snap = { base: t.base, marked: null, mask: t.mask, feather: t.feather || 0, w: t.w, h: t.h };
             const slot = createSlot();
-            slot.setInpaint(rec.dataUrl, t.raw, snap, { historyId: rec.id });
+            slot.setInpaint(rec.dataUrl, t.raw, snap, { historyId: rec.id, openEditor: true });
             document.getElementById('historyDetails').open = false;
-            document.getElementById('inpaintStage').scrollIntoView({ behavior: 'smooth', block: 'center' });
         }
 
         document.getElementById('imageUpload').addEventListener('change', (e) => {
@@ -2346,7 +2334,7 @@
         // adds a result slot on top of the output stack, and runs independently.
 
         let activeGenerations = 0;
-        const APP_BUILD = 'b40';
+        const APP_BUILD = 'b41';
         function updateGlobalStatus() {
             const s = document.getElementById('statusMsg');
             s.style.color = '#a0a0a0';
@@ -2485,6 +2473,7 @@
                     useBtn.className = 'flex-1 py-2 bg-accent rounded-lg text-xs font-bold active:scale-95 transition';
                     useBtn.addEventListener('click', () => useAsInpaintBase(img.src));
                     row2.append(reblend, useBtn);
+                    if (ctx && ctx.openEditor) reblend.click();
 
                     slot.appendChild(row1);
                     slot.appendChild(row2);
