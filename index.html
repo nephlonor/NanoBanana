@@ -2344,7 +2344,7 @@
         // adds a result slot on top of the output stack, and runs independently.
 
         let activeGenerations = 0;
-        const APP_BUILD = 'b48';
+        const APP_BUILD = 'b49';
         function updateGlobalStatus() {
             const s = document.getElementById('statusMsg');
             s.style.color = '#a0a0a0';
@@ -3769,7 +3769,9 @@
                     const url = ev.target.result;
                     try {
                         const img = await loadImageEl(url);
-                        await tbAddImage(url, img.naturalWidth, img.naturalHeight);
+                        const item = await tbAddImage(url, img.naturalWidth, img.naturalHeight);
+                        // Freshly imported photos are selected right away.
+                        if (!tbSel.includes(item.id)) tbToggleSelect(item);
                     } catch (_) { tbToast('Could not read ' + file.name); }
                 };
                 reader.readAsDataURL(file);
