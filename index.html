@@ -2344,7 +2344,7 @@
         // adds a result slot on top of the output stack, and runs independently.
 
         let activeGenerations = 0;
-        const APP_BUILD = 'b44';
+        const APP_BUILD = 'b45';
         function updateGlobalStatus() {
             const s = document.getElementById('statusMsg');
             s.style.color = '#a0a0a0';
@@ -4456,8 +4456,11 @@
                 return;
             }
             if (!vv) { if (window.scrollY || window.scrollX) window.scrollTo(0, 0); return; }
-            const kbOpen = window.innerHeight - vv.height > 80 && document.activeElement === tbPromptEl;
-            if (!kbOpen && (window.scrollY || window.scrollX)) window.scrollTo(0, 0);
+            // While a text field is focused, iOS scrolls the page to keep it
+            // above the keyboard — never fight that, only reset afterwards.
+            const ae = document.activeElement;
+            const editing = !!(ae && ae.matches && ae.matches('input, textarea, select, [contenteditable]'));
+            if (!editing && (window.scrollY || window.scrollX)) window.scrollTo(0, 0);
             const offTop = Math.max(0, vv.offsetTop);
             const offLeft = Math.max(0, vv.offsetLeft);
             top.style.transform = (offTop || offLeft) ? `translate(${offLeft}px, ${offTop}px)` : '';
@@ -4471,6 +4474,7 @@
         window.addEventListener('scroll', () => { if (tbView === 'TABLE') tbSyncViewport(); }, { passive: true });
         window.addEventListener('orientationchange', () => setTimeout(tbSyncViewport, 300));
         tbPromptEl.addEventListener('blur', () => setTimeout(tbSyncViewport, 250));
+        tbPromptEl.addEventListener('focus', () => { setTimeout(tbSyncViewport, 300); setTimeout(tbSyncViewport, 700); });
 
         document.addEventListener('visibilitychange', () => {
             if (document.visibilityState === 'hidden' && tbMetaTimer) tbSaveMetaNow();
