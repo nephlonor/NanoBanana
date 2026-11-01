@@ -99,6 +99,8 @@
             transition: transform .15s, background .15s;
         }
         .tb-icon:active { transform: scale(0.92); }
+        .tb-icon:disabled { opacity: 0.35; }
+        .tb-group { display: flex; align-items: center; gap: 6px; }
         #tbTrash.hot { background: #b91c1c; transform: scale(1.18); color: #fff; }
         #tbClear { display: block; margin: 8px auto 0; font-size: 11px; color: #bdbdbd; background: rgba(20,20,20,0.55); padding: 4px 12px; border-radius: 999px; border: 1px solid rgba(255,255,255,0.08); }
         .tb-bottom { position: absolute; left: 0; right: 0; bottom: 0; padding: 0 12px max(12px, env(safe-area-inset-bottom)); z-index: 3000; pointer-events: none; transition: transform .2s; }
@@ -384,9 +386,17 @@
         <div id="tbLayer"></div>
         <div class="tb-top">
             <div class="tb-row">
+                <div class="tb-group">
                 <button id="tbTrash" class="tb-icon" title="Delete (drag here, or tap to delete selected)">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/></svg>
                 </button>
+                <button id="tbUndoBtn" class="tb-icon" title="Undo" onclick="tbUndo()" disabled>
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14L4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg>
+                </button>
+                <button id="tbRedoBtn" class="tb-icon" title="Redo" onclick="tbRedo()" disabled>
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 14l5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/></svg>
+                </button>
+                </div>
                 <div class="view-switch" data-view-switch>
                     <button data-view="CLASSIC" onclick="setView('CLASSIC')">Classic</button>
                     <button data-view="TABLE" onclick="setView('TABLE')">Table</button>
@@ -2334,7 +2344,7 @@
         // adds a result slot on top of the output stack, and runs independently.
 
         let activeGenerations = 0;
-        const APP_BUILD = 'b41';
+        const APP_BUILD = 'b42';
         function updateGlobalStatus() {
             const s = document.getElementById('statusMsg');
             s.style.color = '#a0a0a0';
@@ -3264,6 +3274,7 @@
         async function tbAddImage(url, w, h, extra) {
             const item = tbPlace({ id: tbNewId(), url, w: w || 1, h: h || 1, kind: 'normal', mask: null, gen: null, ...(extra || {}) });
             item.thumb = await makeImageThumb(url).catch(() => null) || url;
+            tbCheckpoint();
             tbItems.push(item);
             tbSaveBlob(item);
             tbSaveMeta();
@@ -3280,6 +3291,80 @@
             tbSaveMeta();
             tbRender();
         }
+
+        // ---- Undo / redo ---------------------------------------------------
+        // Snapshots of the settled table (pending/error cards are left out and
+        // survive a restore untouched). A finished generation is not an
+        // action: it is added to every stored snapshot so undo never takes a
+        // fresh result off the table.
+        const TB_UNDO_MAX = 40;
+        const tbUndoStack = [], tbRedoStack = [];
+        const TB_SNAP_KEYS = ['id', 'url', 'thumb', 'w', 'h', 'x', 'y', 'rot', 'small', 'z', 'kind', 'mask', 'gen', 'historyId'];
+        function tbSnapItem(i) { const o = {}; TB_SNAP_KEYS.forEach(k => { o[k] = i[k]; }); return o; }
+        function tbSnapshot() { return tbItems.filter(i => !i.pending && !i.error).map(tbSnapItem); }
+        function tbUndoUi() {
+            document.getElementById('tbUndoBtn').disabled = !tbUndoStack.length;
+            document.getElementById('tbRedoBtn').disabled = !tbRedoStack.length;
+        }
+        function tbPushUndoSnap(snap) {
+            tbUndoStack.push(snap);
+            if (tbUndoStack.length > TB_UNDO_MAX) tbUndoStack.shift();
+            tbRedoStack.length = 0;
+            tbUndoUi();
+        }
+        function tbCheckpoint() { if (tbLoaded) tbPushUndoSnap(tbSnapshot()); }
+        function tbAddToSnapshots(item) {
+            const it = tbSnapItem(item);
+            [...tbUndoStack, ...tbRedoStack].forEach(snap => { if (!snap.some(i => i.id === it.id)) snap.push({ ...it }); });
+        }
+        function tbRestore(snap) {
+            const cur = new Map(tbItems.filter(i => !i.pending && !i.error).map(i => [i.id, i]));
+            const live = tbItems.filter(i => i.pending || i.error);
+            const next = snap.map(i => ({ ...i }));
+            const nextIds = new Set(next.map(i => i.id));
+            next.forEach((i) => {
+                const c = cur.get(i.id);
+                if (!c || c.url !== i.url || c.mask !== i.mask || c.gen !== i.gen) tbSaveBlob(i);
+            });
+            cur.forEach((c, id) => {
+                if (nextIds.has(id)) return;
+                tbIdb('delete', TB_BLOB_PREFIX + id);
+                const el = tbEls.get(id);
+                if (el) { el.remove(); tbEls.delete(id); }
+            });
+            tbItems = next.concat(live);
+            const ids = new Set(tbItems.map(i => i.id));
+            tbSel = tbSel.filter(id => ids.has(id));
+            tbZ = Math.max(tbZ, tbItems.reduce((m, i) => Math.max(m, i.z || 0), 0) + 1);
+            tbSaveMeta();
+            tbRender();
+        }
+        function tbUndo() {
+            if (!tbUndoStack.length || tbG) return;
+            tbRedoStack.push(tbSnapshot());
+            tbRestore(tbUndoStack.pop());
+            tbUndoUi();
+        }
+        function tbRedo() {
+            if (!tbRedoStack.length || tbG) return;
+            tbUndoStack.push(tbSnapshot());
+            tbRestore(tbRedoStack.pop());
+            tbUndoUi();
+        }
+        document.addEventListener('keydown', (e) => {
+            if (tbView !== 'TABLE' || !(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 'z') return;
+            if (e.target.closest && e.target.closest('input, textarea, [contenteditable]')) return;
+            if (document.querySelector('.tb-modal.open')) return;
+            e.preventDefault();
+            e.shiftKey ? tbRedo() : tbUndo();
+        });
+        document.addEventListener('keydown', (e) => {
+            if (tbView !== 'TABLE' || !(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 'y') return;
+            if (e.target.closest && e.target.closest('input, textarea, [contenteditable]')) return;
+            if (document.querySelector('.tb-modal.open')) return;
+            e.preventDefault();
+            tbRedo();
+        });
 
         function tbSelected() { return tbSel.map(tbFind).filter(i => i && !i.pending && !i.error); }
 
@@ -3452,7 +3537,7 @@
             const r = tbView$.getBoundingClientRect();
             tbG = {
                 id, pts: new Map([[e.pointerId, { x: e.clientX, y: e.clientY }]]),
-                sx: e.clientX, sy: e.clientY, moved: false, trash: false,
+                sx: e.clientX, sy: e.clientY, moved: false, trash: false, before: tbSnapshot(),
                 W: r.width, H: r.height, L: r.left, T: r.top,
                 timer: setTimeout(() => {
                     if (!tbG || tbG.id !== id || tbG.moved) return;
@@ -3549,6 +3634,7 @@
             if (!item) return;
             if (g.moved) {
                 item._drag = false;
+                if (!item.pending && !item.error && g.before) tbPushUndoSnap(g.before);
                 if (e.type === 'pointerup' && g.trash && tbOverTrash(e.clientX, e.clientY)) {
                     tbRemove(item.id);
                     return;
@@ -3573,13 +3659,15 @@
         document.getElementById('tbTrash').addEventListener('click', () => {
             const sel = tbSelected();
             if (!sel.length) { tbToast('Drag an image onto the trash to delete it'); return; }
-            if (!confirm(`Delete ${sel.length} selected image${sel.length > 1 ? 's' : ''} from the table?`)) return;
+            // No confirm — undo brings them back.
+            tbCheckpoint();
             sel.forEach(i => tbRemove(i.id));
         });
 
         function tbClearTable() {
             if (!tbItems.length) return;
             if (!confirm('Clear the whole table? (History is kept.)')) return;
+            tbCheckpoint();
             tbItems.forEach(i => tbIdb('delete', TB_BLOB_PREFIX + i.id));
             tbItems = [];
             tbSel = [];
@@ -3960,6 +4048,7 @@
             }
             const src = tbFind(s.itemId);
             if (s.mode === 'edit' && src) {
+                tbCheckpoint();
                 src.mask = mask;
                 tbSaveBlob(src);
                 tbMaskClose();
@@ -3975,6 +4064,7 @@
                     const url = s.preview
                         ? compositeInpaintCanvas(s.preview.raw, s.preview.base, tbMaskC, s.w, s.h, mask.feather).toDataURL('image/png')
                         : await compositeInpaint(src.gen.raw, { base: src.gen.base, mask: mask.mask, feather: mask.feather, w: src.gen.w, h: src.gen.h });
+                    tbCheckpoint();
                     src.gen = { ...src.gen, mask: mask.mask, feather: mask.feather };
                     src.url = url;
                     src.thumb = await makeImageThumb(url).catch(() => null) || url;
@@ -3990,6 +4080,7 @@
             }
             // New mask → a yellow copy of the image carrying the mask.
             if (!src) { tbMaskClose(); return; }
+            tbCheckpoint();
             const copy = {
                 id: tbNewId(), url: src.url, thumb: src.thumb, w: s.w, h: s.h, kind: 'masked', mask, gen: null,
                 x: Math.min(0.95, src.x + 0.06), y: Math.min(0.95, src.y + 0.04), rot: src.small ? tbBacklogRot() : tbRand(-20, 20), small: src.small, z: tbZ++
@@ -4100,6 +4191,7 @@
                     delete item._job;
                     if (out.type === 'inpaint') { item.kind = 'genmask'; item.gen = { ...histRec.inpaint }; }
                     item.historyId = await histP;
+                    tbAddToSnapshots(item);
                     tbSaveBlob(item);
                     tbSaveMeta();
                     tbRender();
