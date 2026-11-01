@@ -1374,11 +1374,12 @@
 
         // Overwrite a history record's image + thumbnail (used by re-blend so
         // the stored version always matches the tuned result).
-        async function updateHistoryImage(id, dataUrl) {
+        async function updateHistoryImage(id, dataUrl, inpaintPatch) {
             try {
                 const rec = await getHistoryItem(id);
                 if (!rec) return;
                 rec.dataUrl = dataUrl;
+                if (inpaintPatch && rec.inpaint) Object.assign(rec.inpaint, inpaintPatch);
                 rec.thumb = await makeImageThumb(dataUrl);
                 await putHistory(rec);
                 refreshHistoryUI();
@@ -2345,7 +2346,7 @@
         // adds a result slot on top of the output stack, and runs independently.
 
         let activeGenerations = 0;
-        const APP_BUILD = 'b39';
+        const APP_BUILD = 'b40';
         function updateGlobalStatus() {
             const s = document.getElementById('statusMsg');
             s.style.color = '#a0a0a0';
@@ -2457,34 +2458,27 @@
                     const row2 = document.createElement('div');
                     row2.className = 'flex gap-2 mt-2';
                     const reblend = document.createElement('button');
-                    reblend.textContent = '✎ Re-blend (edit mask/feather)';
+                    reblend.textContent = '✎ Edit mask (re-blend)';
                     reblend.className = 'flex-1 py-2 bg-secondary rounded-lg text-xs font-bold active:scale-95 transition';
-                    reblend.addEventListener('click', async () => {
-                        if (!snap) return;
-                        const orig = reblend.textContent;
-                        reblend.disabled = true;
-                        reblend.textContent = 'Blending…';
-                        try {
-                            // Re-composite the SAME raw output through the mask
-                            // as it is painted in the editor RIGHT NOW, with the
-                            // current feather value. Free — no API call.
-                            const tuned = {
-                                ...snap,
-                                mask: maskCanvas.toDataURL('image/png'),
-                                feather: parseInt(document.getElementById('featherRange').value, 10) || 0
-                            };
-                            currentClean = await compositeInpaint(rawUrl, tuned);
-                            showingRaw = false;
-                            img.src = currentClean;
-                            dl.href = currentClean;
-                            tog.textContent = 'Show raw';
-                            if (ctx && ctx.historyId != null) updateHistoryImage(ctx.historyId, currentClean);
-                        } catch (e) {
-                            alert('Re-blend failed: ' + (e.message || e));
-                        } finally {
-                            reblend.disabled = false;
-                            reblend.textContent = orig;
-                        }
+                    // Current mask/feather for this result; updated on every re-blend.
+                    let curMask = snap && snap.mask, curFeather = snap ? snap.feather : 12;
+                    reblend.addEventListener('click', () => {
+                        if (!snap || !rawUrl) return;
+                        // Popup mask editor with live preview of the blend.
+                        // Free — re-composites the SAME raw output, no API call.
+                        const gen = { raw: rawUrl, base: snap.base, w: snap.w, h: snap.h };
+                        tbOpenMask({
+                            mode: 'regen', gen,
+                            onDone: (url, mask, feather) => {
+                                curMask = mask; curFeather = feather;
+                                currentClean = url;
+                                showingRaw = false;
+                                img.src = url;
+                                dl.href = url;
+                                tog.textContent = 'Show raw';
+                                if (ctx && ctx.historyId != null) updateHistoryImage(ctx.historyId, url, { mask, feather });
+                            }
+                        }, snap.base, curMask, curFeather);
                     });
                     const useBtn = document.createElement('button');
                     useBtn.textContent = 'Use as base ↻';
@@ -3859,10 +3853,11 @@
             if (session.mode === 'regen') {
                 // Live preview: the stage shows the blended result instead of
                 // the original, recomputed locally after every stroke.
-                const src = tbFind(session.itemId);
+                // Classic passes its gen data directly; Table looks up the item.
+                const gen = session.gen || (tbFind(session.itemId) || {}).gen;
                 try {
                     const sess = tbMaskSession;
-                    const [raw, base] = await Promise.all([loadImageEl(src.gen.raw), loadImageEl(src.gen.base)]);
+                    const [raw, base] = await Promise.all([loadImageEl(gen.raw), loadImageEl(gen.base)]);
                     if (tbMaskSession !== sess) return;
                     sess.preview = { raw, base };
                     stage.classList.add('tb-live');
@@ -3961,6 +3956,19 @@
             if (!s) return;
             if (tbMaskEmpty()) { tbToast('Paint the area to change first'); return; }
             const mask = { base: s.base, mask: tbMaskC.toDataURL('image/png'), feather: parseInt(document.getElementById('tbFeather').value, 10) || 0, w: s.w, h: s.h };
+            if (s.mode === 'regen' && s.onDone) {
+                // Classic result slot: blend, hand the result back, done.
+                try {
+                    const url = s.preview
+                        ? compositeInpaintCanvas(s.preview.raw, s.preview.base, tbMaskC, s.w, s.h, mask.feather).toDataURL('image/png')
+                        : await compositeInpaint(s.gen.raw, { base: s.gen.base, mask: mask.mask, feather: mask.feather, w: s.gen.w, h: s.gen.h });
+                    s.onDone(url, mask.mask, mask.feather);
+                    tbMaskClose();
+                } catch (e) {
+                    alert('Re-blend failed: ' + (e.message || e));
+                }
+                return;
+            }
             const src = tbFind(s.itemId);
             if (s.mode === 'edit' && src) {
                 src.mask = mask;
@@ -3982,7 +3990,7 @@
                     src.url = url;
                     src.thumb = await makeImageThumb(url).catch(() => null) || url;
                     tbSaveBlob(src);
-                    if (src.historyId != null) updateHistoryImage(src.historyId, url);
+                    if (src.historyId != null) updateHistoryImage(src.historyId, url, { mask: mask.mask, feather: mask.feather });
                     tbMaskClose();
                     tbRender();
                 } catch (e) {
