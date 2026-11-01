@@ -2344,7 +2344,7 @@
         // adds a result slot on top of the output stack, and runs independently.
 
         let activeGenerations = 0;
-        const APP_BUILD = 'b46';
+        const APP_BUILD = 'b47';
         function updateGlobalStatus() {
             const s = document.getElementById('statusMsg');
             s.style.color = '#a0a0a0';
@@ -4483,6 +4483,20 @@
             const off = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
             bottom.style.transform = off ? `translateY(${-off}px)` : '';
             tbAutoGrow();
+            // iOS's numbers don't always add up (page scroll, keyboard
+            // accessory bar) — measure where the prompt actually ended up and
+            // lift it further if any of it is still below the visible area.
+            if (editing && ae === tbPromptEl) {
+                const visBottom = vv.offsetTop + vv.height - 8;
+                const r = tbPromptEl.getBoundingClientRect();
+                const hidden = r.bottom - visBottom;
+                if (hidden > 0) bottom.style.transform = `translateY(${-(off + hidden)}px)`;
+                const minTop = top.getBoundingClientRect().bottom + 8;
+                const r2 = tbPromptEl.getBoundingClientRect();
+                if (r2.top < minTop) {
+                    tbPromptEl.style.height = Math.max(40, r2.height - (minTop - r2.top)) + 'px';
+                }
+            }
         }
         if (window.visualViewport) {
             window.visualViewport.addEventListener('resize', tbSyncViewport);
@@ -4491,7 +4505,19 @@
         window.addEventListener('scroll', () => { if (tbView === 'TABLE') tbSyncViewport(); }, { passive: true });
         window.addEventListener('orientationchange', () => setTimeout(tbSyncViewport, 300));
         tbPromptEl.addEventListener('blur', () => { tbAutoGrow(); setTimeout(tbSyncViewport, 250); });
-        tbPromptEl.addEventListener('focus', () => { tbAutoGrow(); setTimeout(tbSyncViewport, 300); setTimeout(tbSyncViewport, 700); });
+        // Opening the prompt puts the caret at the end of the text and keeps
+        // the end in view while the keyboard slides in.
+        function tbCaretToEnd() {
+            if (document.activeElement !== tbPromptEl) return;
+            const n = tbPromptEl.value.length;
+            try { tbPromptEl.setSelectionRange(n, n); } catch (_) {}
+            tbPromptEl.scrollTop = tbPromptEl.scrollHeight;
+        }
+        tbPromptEl.addEventListener('focus', () => {
+            tbAutoGrow();
+            setTimeout(tbCaretToEnd, 0);
+            [150, 350, 700, 1100].forEach((t) => setTimeout(() => { tbSyncViewport(); tbPromptEl.scrollTop = tbPromptEl.scrollHeight; }, t));
+        });
 
         document.addEventListener('visibilitychange', () => {
             if (document.visibilityState === 'hidden' && tbMetaTimer) tbSaveMetaNow();
