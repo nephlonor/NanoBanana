@@ -155,6 +155,10 @@
         .tb-panel { background: #1f2221; border: 1px solid #333; border-radius: 18px; padding: 14px; width: 100%; max-width: 680px; box-shadow: 0 20px 50px rgba(0,0,0,0.6); }
         #tbStage { position: relative; margin: 0 auto; touch-action: none; border-radius: 10px; overflow: hidden; }
         #tbStage canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+        #tbMaskC { opacity: 0.55; transition: opacity .12s; }
+        /* Live re-blend preview: the mask only shows (soft red) while painting. */
+        #tbStage.tb-live #tbMaskC { opacity: 0; filter: blur(var(--tb-mask-blur, 3px)); }
+        #tbStage.tb-live.tb-painting #tbMaskC { opacity: 0.5; transition: none; }
         #tbViewer {
             position: fixed; inset: 0; z-index: 92; background: #000; display: none;
             touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
@@ -419,7 +423,7 @@
                 <span class="text-sm font-bold" id="tbMaskTitle">Paint the mask</span>
                 <span class="text-[10px] text-gray-500">Paint where the edit should happen</span>
             </div>
-            <div id="tbStage"><canvas id="tbBaseC"></canvas><canvas id="tbMaskC" style="opacity:0.55"></canvas></div>
+            <div id="tbStage"><canvas id="tbBaseC"></canvas><canvas id="tbMaskC"></canvas></div>
             <div class="flex gap-2 mt-3 mb-3">
                 <button id="tbBrushBtn" onclick="tbSetBrush('brush')" class="flex-1 py-2 rounded-lg text-xs font-bold bg-gray-700 active-res">Brush</button>
                 <button id="tbEraseBtn" onclick="tbSetBrush('erase')" class="flex-1 py-2 rounded-lg text-xs font-bold bg-gray-700">Erase</button>
@@ -1292,9 +1296,14 @@
             const [rawImg, baseImg, maskImg] = await Promise.all([
                 loadImageEl(rawUrl), loadImageEl(snap.base), loadImageEl(snap.mask)
             ]);
-            const w = snap.w, h = snap.h;
+            return compositeInpaintCanvas(rawImg, baseImg, maskImg, snap.w, snap.h, snap.feather).toDataURL('image/png');
+        }
 
-            const feathered = featheredMaskCanvas(maskImg, w, h, snap.feather);
+        // Synchronous core of compositeInpaint: works on already-loaded
+        // sources (images or canvases), so the mask editor can redraw its
+        // preview on every stroke without re-decoding anything.
+        function compositeInpaintCanvas(rawImg, baseImg, maskImg, w, h, featherSetting, out) {
+            const feathered = featheredMaskCanvas(maskImg, w, h, featherSetting);
 
             const clipped = document.createElement('canvas');
             clipped.width = w; clipped.height = h;
@@ -1303,12 +1312,15 @@
             cctx.globalCompositeOperation = 'destination-in';
             cctx.drawImage(feathered, 0, 0);
 
-            const out = document.createElement('canvas');
-            out.width = w; out.height = h;
+            if (!out) {
+                out = document.createElement('canvas');
+                out.width = w; out.height = h;
+            }
             const octx = out.getContext('2d');
+            octx.clearRect(0, 0, w, h);
             octx.drawImage(baseImg, 0, 0, w, h);
             octx.drawImage(clipped, 0, 0);
-            return out.toDataURL('image/png');
+            return out;
         }
 
         function inpaintWrapperPrompt(userPrompt, refCount) {
@@ -2333,7 +2345,7 @@
         // adds a result slot on top of the output stack, and runs independently.
 
         let activeGenerations = 0;
-        const APP_BUILD = 'b38';
+        const APP_BUILD = 'b39';
         function updateGlobalStatus() {
             const s = document.getElementById('statusMsg');
             s.style.color = '#a0a0a0';
@@ -3842,6 +3854,20 @@
             }
             tbMaskUndo.length = 0;
             tbMaskSession = { ...session, w, h, base: tbBaseC.toDataURL('image/jpeg', 0.92) };
+            const stage = document.getElementById('tbStage');
+            stage.classList.remove('tb-live', 'tb-painting');
+            if (session.mode === 'regen') {
+                // Live preview: the stage shows the blended result instead of
+                // the original, recomputed locally after every stroke.
+                const src = tbFind(session.itemId);
+                try {
+                    const sess = tbMaskSession;
+                    const [raw, base] = await Promise.all([loadImageEl(src.gen.raw), loadImageEl(src.gen.base)]);
+                    if (tbMaskSession !== sess) return;
+                    sess.preview = { raw, base };
+                    stage.classList.add('tb-live');
+                } catch (_) { /* no raw → fall back to plain mask editing */ }
+            }
             document.getElementById('tbFeather').value = feather ?? 12;
             document.getElementById('tbMaskTitle').textContent =
                 session.mode === 'regen' ? 'Edit original mask' : session.mode === 'edit' ? 'Edit mask' : 'Paint a new mask';
@@ -3849,10 +3875,28 @@
             tbSetBrush('brush');
             document.getElementById('tbMaskModal').classList.add('open');
             tbFitStage();
+            tbUpdatePreview();
         }
+
+        // Re-blend the stored raw output through the mask as painted right
+        // now and draw it into the stage — local only, no API call.
+        function tbUpdatePreview() {
+            const s = tbMaskSession;
+            if (!s || !s.preview) return;
+            const feather = parseInt(document.getElementById('tbFeather').value, 10) || 0;
+            try {
+                compositeInpaintCanvas(s.preview.raw, s.preview.base, tbMaskC, s.w, s.h, feather, tbBaseC);
+            } catch (e) { console.warn('preview blend failed:', e); }
+            // Soft overlay while painting: feather blur in screen px.
+            const r = tbMaskC.getBoundingClientRect();
+            const blur = Math.max(2, Math.min(24, feather * Math.max(r.width, r.height) / 512));
+            document.getElementById('tbStage').style.setProperty('--tb-mask-blur', blur.toFixed(1) + 'px');
+        }
+        document.getElementById('tbFeather').addEventListener('input', tbUpdatePreview);
 
         function tbMaskClose() {
             document.getElementById('tbMaskModal').classList.remove('open');
+            document.getElementById('tbStage').classList.remove('tb-live', 'tb-painting');
             tbMaskSession = null;
         }
 
@@ -3866,8 +3910,8 @@
                 if (tbMaskUndo.length > 20) tbMaskUndo.shift();
             } catch (_) {}
         }
-        function tbMaskUndoStep() { const p = tbMaskUndo.pop(); if (p) tbMaskC.getContext('2d').putImageData(p, 0, 0); }
-        function tbMaskClear() { tbPushUndo(); tbMaskC.getContext('2d').clearRect(0, 0, tbMaskC.width, tbMaskC.height); }
+        function tbMaskUndoStep() { const p = tbMaskUndo.pop(); if (p) { tbMaskC.getContext('2d').putImageData(p, 0, 0); tbUpdatePreview(); } }
+        function tbMaskClear() { tbPushUndo(); tbMaskC.getContext('2d').clearRect(0, 0, tbMaskC.width, tbMaskC.height); tbUpdatePreview(); }
 
         tbMaskC.addEventListener('pointerdown', (e) => {
             if (!tbMaskSession) return;
@@ -3875,6 +3919,7 @@
             tbMaskC.setPointerCapture(e.pointerId);
             tbPushUndo();
             tbPainting = true;
+            document.getElementById('tbStage').classList.add('tb-painting');
             const ctx = tbMaskC.getContext('2d');
             const r = tbMaskC.getBoundingClientRect();
             const lw = parseInt(document.getElementById('tbBrushSize').value, 10) * (tbMaskC.width / r.width);
@@ -3893,7 +3938,13 @@
             const ctx = tbMaskC.getContext('2d');
             ctx.lineTo(x, y); ctx.stroke();
         });
-        const tbEndPaint = () => { tbPainting = false; tbMaskC.getContext('2d').globalCompositeOperation = 'source-over'; };
+        const tbEndPaint = () => {
+            const was = tbPainting;
+            tbPainting = false;
+            tbMaskC.getContext('2d').globalCompositeOperation = 'source-over';
+            document.getElementById('tbStage').classList.remove('tb-painting');
+            if (was) tbUpdatePreview();
+        };
         tbMaskC.addEventListener('pointerup', tbEndPaint);
         tbMaskC.addEventListener('pointercancel', tbEndPaint);
 
@@ -3924,7 +3975,9 @@
                 try {
                     // Re-composite the same raw output through the new mask —
                     // no new generation, no cost.
-                    const url = await compositeInpaint(src.gen.raw, { base: src.gen.base, mask: mask.mask, feather: mask.feather, w: src.gen.w, h: src.gen.h });
+                    const url = s.preview
+                        ? compositeInpaintCanvas(s.preview.raw, s.preview.base, tbMaskC, s.w, s.h, mask.feather).toDataURL('image/png')
+                        : await compositeInpaint(src.gen.raw, { base: src.gen.base, mask: mask.mask, feather: mask.feather, w: src.gen.w, h: src.gen.h });
                     src.gen = { ...src.gen, mask: mask.mask, feather: mask.feather };
                     src.url = url;
                     src.thumb = await makeImageThumb(url).catch(() => null) || url;
