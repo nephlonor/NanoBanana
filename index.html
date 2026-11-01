@@ -155,6 +155,26 @@
         .tb-panel { background: #1f2221; border: 1px solid #333; border-radius: 18px; padding: 14px; width: 100%; max-width: 680px; box-shadow: 0 20px 50px rgba(0,0,0,0.6); }
         #tbStage { position: relative; margin: 0 auto; touch-action: none; border-radius: 10px; overflow: hidden; }
         #tbStage canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+        #tbViewer {
+            position: fixed; inset: 0; z-index: 92; background: #000; display: none;
+            touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+        }
+        #tbViewer.open { display: block; }
+        #tbVStage {
+            position: absolute; left: 0; right: 0; top: 0; bottom: calc(76px + env(safe-area-inset-bottom));
+            overflow: hidden; display: flex; align-items: center; justify-content: center;
+        }
+        #tbVImg {
+            flex: none; transform-origin: center center;
+            pointer-events: none; -webkit-user-drag: none; will-change: transform;
+        }
+        #tbVImg.anim { transition: transform .22s ease; }
+        #tbVClose { position: absolute; top: max(12px, env(safe-area-inset-top)); right: 12px; z-index: 2; }
+        #tbVBar {
+            position: absolute; left: 0; right: 0; bottom: 0; height: calc(76px + env(safe-area-inset-bottom));
+            padding-bottom: env(safe-area-inset-bottom); display: flex; align-items: center; justify-content: center;
+        }
+        #tbVSave { padding: 12px 36px; border-radius: 14px; font-weight: 700; font-size: 15px; }
         #tbToast {
             position: fixed; left: 50%; bottom: 140px; transform: translateX(-50%); z-index: 95; pointer-events: none;
             background: rgba(10,10,10,0.9); color: #eee; font-size: 12px; padding: 8px 14px; border-radius: 999px;
@@ -432,6 +452,12 @@
     </div>
 
     <div id="tbToast"></div>
+
+    <div id="tbViewer">
+        <div id="tbVStage"><img id="tbVImg" alt="" draggable="false"></div>
+        <button id="tbVClose" class="tb-icon" title="Close" onclick="tbCloseViewer()">✕</button>
+        <div id="tbVBar"><button id="tbVSave" class="bg-accent" onclick="tbViewerSave()">Download</button></div>
+    </div>
 
     <div id="imageModal" class="modal" onclick="closeEnlarge(event)">
         <img id="modalImg" class="max-w-[95%] max-h-[90vh] shadow-2xl rounded-lg hidden">
@@ -2307,7 +2333,7 @@
         // adds a result slot on top of the output stack, and runs independently.
 
         let activeGenerations = 0;
-        const APP_BUILD = 'b37';
+        const APP_BUILD = 'b38';
         function updateGlobalStatus() {
             const s = document.getElementById('statusMsg');
             s.style.color = '#a0a0a0';
@@ -3370,7 +3396,8 @@
         // swings in behind the finger, damped by TB_SPIN (friction). A second
         // finger (on the item or anywhere on the table) turns it with the
         // two-finger line.
-        const TB_SPIN = 0.35;      // 0 = never turns, 1 = turns freely
+        const TB_SPIN = 0.35;
+        const TB_PINCH_OPEN = 1.7;  // two-finger spread ratio that opens the viewer      // 0 = never turns, 1 = turns freely
         let tbG = null;            // {id, pts: Map(pid -> {x,y}), sx, sy, moved, trash, timer, W, H, L, T}
 
         function tbOverTrash(x, y) {
@@ -3417,6 +3444,8 @@
                 e.preventDefault(); e.stopPropagation();
                 tbG.pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
                 try { tbView$.setPointerCapture(e.pointerId); } catch (_) {}
+                const [p0, p1] = [...tbG.pts.values()];
+                tbG.d0 = Math.max(20, Math.hypot(p1.x - p0.x, p1.y - p0.y));
                 tbBeginMove(item);
                 tbG.trash = false;
                 document.getElementById('tbTrash').classList.remove('hot');
@@ -3460,6 +3489,15 @@
             let cx = g.L + item.x * g.W, cy = g.T + item.y * g.H;
             let dth, px, py, nx, ny, fy;
             const other = g.pts.size >= 2 ? [...g.pts].find(([pid]) => pid !== e.pointerId)[1] : null;
+            if (other && !item.pending && !item.error && Math.hypot(cur.x - other.x, cur.y - other.y) / g.d0 > TB_PINCH_OPEN) {
+                // Spread apart: open the print full screen.
+                tbGestureEnd();
+                item._drag = false;
+                tbSaveMeta();
+                tbRender();
+                tbOpenViewer(item);
+                return;
+            }
             if (other) {
                 // Two fingers: turn with the line between them, move with its midpoint.
                 dth = Math.atan2(cur.y - other.y, cur.x - other.x) - Math.atan2(prev.y - other.y, prev.x - other.x);
@@ -3588,6 +3626,151 @@
             if (btn) { const t = btn.textContent; btn.textContent = '✓ On table'; setTimeout(() => { btn.textContent = t; }, 1400); }
             if (tbView === 'TABLE') tbToast('Added to table');
         }
+
+        // ---- Full-screen viewer -----------------------------------------
+        // Opened by spreading two fingers on a print. Pinch / wheel zoom,
+        // drag to pan, double tap toggles zoom, pinching well below 1× closes.
+        const tbVEl = document.getElementById('tbViewer');
+        const tbVImg = document.getElementById('tbVImg');
+        const tbVStage = document.getElementById('tbVStage');
+        const tbV = { s: 1, tx: 0, ty: 0, pts: new Map(), file: null, blob: null, name: '', tap: null, moved: false };
+
+        function tbVApply(anim) {
+            tbVImg.classList.toggle('anim', !!anim);
+            tbVImg.style.transform = `translate(${tbV.tx}px, ${tbV.ty}px) scale(${tbV.s})`;
+        }
+        // Zoom to scale ns keeping the screen point (fx, fy) fixed.
+        function tbVZoomAt(ns, fx, fy) {
+            const r = tbVStage.getBoundingClientRect();
+            const ox = fx - (r.left + r.width / 2), oy = fy - (r.top + r.height / 2);
+            const k = ns / tbV.s;
+            tbV.tx = ox - k * (ox - tbV.tx);
+            tbV.ty = oy - k * (oy - tbV.ty);
+            tbV.s = ns;
+        }
+        // Keep the zoomed image covering the stage instead of drifting off.
+        function tbVSettle(anim = true) {
+            if (tbV.s < 1) { tbV.s = 1; tbV.tx = tbV.ty = 0; }
+            const r = tbVStage.getBoundingClientRect();
+            const w = tbVImg.offsetWidth * tbV.s, h = tbVImg.offsetHeight * tbV.s;
+            const mx = Math.max(0, (w - r.width) / 2), my = Math.max(0, (h - r.height) / 2);
+            tbV.tx = Math.max(-mx, Math.min(mx, tbV.tx));
+            tbV.ty = Math.max(-my, Math.min(my, tbV.ty));
+            tbVApply(anim);
+        }
+
+        // Fit the image to the stage (scaling small images up too).
+        function tbVFit() {
+            const nw = tbVImg.naturalWidth, nh = tbVImg.naturalHeight;
+            if (!nw || !nh) return;
+            const r = tbVStage.getBoundingClientRect();
+            const k = Math.min(r.width / nw, r.height / nh);
+            tbVImg.style.width = Math.round(nw * k) + 'px';
+            tbVImg.style.height = Math.round(nh * k) + 'px';
+        }
+        tbVImg.addEventListener('load', tbVFit);
+        window.addEventListener('resize', () => { if (tbVEl.classList.contains('open')) { tbVFit(); tbVSettle(false); } });
+
+        function tbOpenViewer(item) {
+            const url = item.url;
+            if (!url) return;
+            tbV.s = 1; tbV.tx = tbV.ty = 0; tbV.pts.clear(); tbV.tap = null;
+            tbV.file = tbV.blob = null;
+            tbVApply(false);
+            tbVImg.src = url;
+            const mime = tbMime(url);
+            const ext = (mime.split('/')[1] || 'png').replace('jpeg', 'jpg').replace(/\+.*/, '');
+            tbV.name = `nanobanana-${Date.now()}.${ext}`;
+            // Build the file up front: iOS only opens the share sheet from a
+            // tap if share() is called without awaiting anything first.
+            const want = url;
+            fetch(url).then(r => r.blob()).then((blob) => {
+                if (tbVImg.getAttribute('src') !== want) return;
+                tbV.blob = blob;
+                tbV.file = new File([blob], tbV.name, { type: blob.type || mime });
+            }).catch((e) => console.warn('viewer: could not prepare file', e));
+            tbVEl.classList.add('open');
+            tbVFit();
+        }
+
+        function tbCloseViewer() {
+            tbVEl.classList.remove('open');
+            tbV.pts.clear();
+            tbVImg.removeAttribute('src');
+            tbV.file = tbV.blob = null;
+        }
+
+        async function tbViewerSave() {
+            if (!tbV.file) { tbToast('Preparing image…'); return; }
+            // Touch devices (iPhone): share sheet → "Save Image". Desktop: plain download.
+            const touch = window.matchMedia && matchMedia('(pointer: coarse)').matches;
+            if (touch && navigator.canShare && navigator.canShare({ files: [tbV.file] })) {
+                try { await navigator.share({ files: [tbV.file] }); return; }
+                catch (e) {
+                    if (e && e.name === 'AbortError') return;
+                    console.warn('share() failed, falling back to download:', e);
+                }
+            }
+            const u = URL.createObjectURL(tbV.blob);
+            const a = document.createElement('a');
+            a.href = u; a.download = tbV.name; a.style.display = 'none';
+            document.body.appendChild(a); a.click(); a.remove();
+            setTimeout(() => URL.revokeObjectURL(u), 30000);
+        }
+
+        tbVStage.addEventListener('pointerdown', (e) => {
+            if (e.pointerType === 'mouse' && e.button !== 0) return;
+            e.preventDefault();
+            tbV.pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+            if (tbV.pts.size === 1) { tbV.moved = false; tbV.down = { x: e.clientX, y: e.clientY, t: Date.now() }; }
+            else tbV.moved = true;
+            try { tbVStage.setPointerCapture(e.pointerId); } catch (_) {}
+            tbVApply(false);
+        });
+        tbVStage.addEventListener('pointermove', (e) => {
+            const prev = tbV.pts.get(e.pointerId);
+            if (!prev) return;
+            const cur = { x: e.clientX, y: e.clientY };
+            if (tbV.pts.size >= 2) {
+                const o = [...tbV.pts].find(([pid]) => pid !== e.pointerId)[1];
+                const d0 = Math.max(1, Math.hypot(prev.x - o.x, prev.y - o.y));
+                const d1 = Math.hypot(cur.x - o.x, cur.y - o.y);
+                const mx0 = (prev.x + o.x) / 2, my0 = (prev.y + o.y) / 2;
+                tbVZoomAt(Math.max(0.4, Math.min(10, tbV.s * d1 / d0)), mx0, my0);
+                tbV.tx += (cur.x + o.x) / 2 - mx0;
+                tbV.ty += (cur.y + o.y) / 2 - my0;
+            } else {
+                if (!tbV.moved && Math.hypot(cur.x - tbV.down.x, cur.y - tbV.down.y) < 8) return;
+                tbV.moved = true;
+                tbV.tx += cur.x - prev.x;
+                tbV.ty += cur.y - prev.y;
+            }
+            tbV.pts.set(e.pointerId, cur);
+            tbVApply(false);
+        });
+        function tbVEnd(e) {
+            if (!tbV.pts.delete(e.pointerId) || tbV.pts.size) return;
+            if (tbV.s < 0.75) { tbCloseViewer(); return; }
+            if (!tbV.moved && e.type === 'pointerup') {
+                // Double tap: zoom in on the spot, or back out.
+                const now = Date.now();
+                if (tbV.tap && now - tbV.tap.t < 320 && Math.hypot(e.clientX - tbV.tap.x, e.clientY - tbV.tap.y) < 30) {
+                    tbV.tap = null;
+                    if (tbV.s > 1.05) { tbV.s = 1; tbV.tx = tbV.ty = 0; }
+                    else tbVZoomAt(2.5, e.clientX, e.clientY);
+                } else tbV.tap = { t: now, x: e.clientX, y: e.clientY };
+            }
+            tbVSettle();
+        }
+        tbVStage.addEventListener('pointerup', tbVEnd);
+        tbVStage.addEventListener('pointercancel', tbVEnd);
+        tbVStage.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            tbVZoomAt(Math.max(1, Math.min(10, tbV.s * Math.exp(-e.deltaY * 0.0015))), e.clientX, e.clientY);
+            tbVSettle(false);
+        }, { passive: false });
+        tbVEl.addEventListener('contextmenu', (e) => e.preventDefault());
+        document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && tbVEl.classList.contains('open')) tbCloseViewer(); });
 
         // ---- Long press / mask editor ------------------------------------
         function tbLongPress(item) {
