@@ -70,11 +70,106 @@
             animation: spin 0.9s linear infinite;
         }
         @keyframes spin { to { transform: rotate(360deg); } }
+
+        /* ---- View switch + Table mode ---------------------------------- */
+        .view-switch { display: inline-flex; background: #3a3d3c; padding: 3px; border-radius: 999px; }
+        .view-switch button { padding: 5px 16px; border-radius: 999px; font-size: 12px; font-weight: 700; color: #cfcfcf; }
+        .view-switch button.on { background: #f0f0f0; color: #1b1b1b; }
+        body.table-on { overflow: hidden; }
+        body.table-on #classicRoot, body.table-on > .view-switch { display: none; }
+        #tableView {
+            position: fixed; inset: 0; z-index: 50; display: none; overflow: hidden;
+            background: #2a2a2a; touch-action: none; user-select: none; -webkit-user-select: none;
+            -webkit-touch-callout: none;
+        }
+        body.table-on #tableView { display: block; }
+        #tbBacklog {
+            position: absolute; left: 0; right: 0; top: 0; height: 33.333%;
+            background: linear-gradient(180deg, rgba(0,0,0,0.22), rgba(0,0,0,0.08));
+            border-bottom: 1px dashed rgba(255,255,255,0.12); pointer-events: none;
+        }
+        #tbBacklog span { position: absolute; right: 12px; bottom: 6px; font-size: 10px; letter-spacing: .08em; color: rgba(255,255,255,0.25); text-transform: uppercase; }
+        #tbBacklog.hot { background: linear-gradient(180deg, rgba(20,184,166,0.16), rgba(20,184,166,0.05)); }
+        .tb-top { position: absolute; left: 0; right: 0; top: 0; padding: max(12px, env(safe-area-inset-top)) 12px 0; z-index: 3000; pointer-events: none; }
+        .tb-top > * { pointer-events: auto; }
+        .tb-row { display: flex; align-items: center; justify-content: space-between; }
+        .tb-icon {
+            width: 42px; height: 42px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+            background: rgba(20,20,20,0.6); color: #e5e5e5; border: 1px solid rgba(255,255,255,0.1);
+            transition: transform .15s, background .15s;
+        }
+        .tb-icon:active { transform: scale(0.92); }
+        #tbTrash.hot { background: #b91c1c; transform: scale(1.18); color: #fff; }
+        #tbClear { display: block; margin: 8px auto 0; font-size: 11px; color: #bdbdbd; background: rgba(20,20,20,0.55); padding: 4px 12px; border-radius: 999px; border: 1px solid rgba(255,255,255,0.08); }
+        .tb-bottom { position: absolute; left: 0; right: 0; bottom: 0; padding: 0 12px max(12px, env(safe-area-inset-bottom)); z-index: 3000; pointer-events: none; transition: transform .2s; }
+        .tb-bottom > * { pointer-events: auto; }
+        #tbPlus {
+            display: flex; margin: 0 auto 10px; width: 52px; height: 52px; border-radius: 50%;
+            align-items: center; justify-content: center; background: #f0f0f0; color: #1b1b1b;
+            box-shadow: 0 6px 18px rgba(0,0,0,0.45); transition: transform .15s;
+        }
+        #tbPlus:active { transform: scale(0.9); }
+        .tb-bar { display: flex; gap: 8px; align-items: flex-end; max-width: 640px; margin: 0 auto; }
+        #tbPrompt {
+            flex: 1; resize: none; background: rgba(15,15,15,0.85); color: #f0f0f0; border-radius: 14px;
+            padding: 10px 12px; font-size: 15px; line-height: 1.3; max-height: 7.5em; border: 1px solid rgba(255,255,255,0.1);
+            user-select: text; -webkit-user-select: text;
+        }
+        #tbPrompt:focus { outline: none; border-color: #14b8a6; }
+        #tbGen { padding: 11px 16px; border-radius: 14px; font-weight: 700; font-size: 14px; }
+        #tbHint { text-align: center; font-size: 10px; color: rgba(255,255,255,0.35); margin-top: 6px; min-height: 1em; }
+        .tb-item {
+            position: absolute; transform-origin: center center; background: #111;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.45);
+            transition: transform .2s ease, scale .22s ease, box-shadow .2s ease;
+            will-change: transform;
+        }
+        .tb-item img { width: 100%; height: 100%; object-fit: fill; display: block; pointer-events: none; -webkit-user-drag: none; }
+        .tb-item .tb-maskov { position: absolute; inset: 0; opacity: 0.45; }
+        .tb-item.masked { outline: 3px solid #facc15; }
+        .tb-item.genmask { outline: 3px solid #22c55e; }
+        .tb-item.sel { box-shadow: 0 0 0 2px #fff, 0 14px 28px rgba(0,0,0,0.6); }
+        .tb-item.masked.sel, .tb-item.genmask.sel { box-shadow: 0 0 0 5px #fff, 0 14px 28px rgba(0,0,0,0.6); }
+        .tb-item.dragging { transition: scale .22s ease, box-shadow .2s ease; box-shadow: 0 20px 38px rgba(0,0,0,0.65); }
+        .tb-item.dragging.sel { box-shadow: 0 0 0 2px #fff, 0 20px 38px rgba(0,0,0,0.65); }
+        .tb-badge {
+            position: absolute; top: -9px; left: -9px; min-width: 20px; height: 20px; padding: 0 5px; border-radius: 999px;
+            background: #fff; color: #111; font-size: 11px; font-weight: 700; display: flex; align-items: center; justify-content: center;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.5); pointer-events: none;
+        }
+        .tb-pending { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; background: #1a1a1a; }
+        .tb-pending .tb-st { font-size: 10px; color: #9ca3af; text-align: center; padding: 0 8px; }
+        .tb-pending.err .tb-st { color: #f87171; }
+        #tbSettings {
+            position: absolute; top: 0; right: 0; bottom: 0; width: min(440px, 100%); z-index: 4000;
+            background: linear-gradient(170deg, #1f2221 0%, #1a1d1c 100%); box-shadow: -10px 0 30px rgba(0,0,0,0.5);
+            transform: translateX(105%); transition: transform .25s ease; overflow-y: auto; -webkit-overflow-scrolling: touch;
+            padding: max(14px, env(safe-area-inset-top)) 14px max(20px, env(safe-area-inset-bottom));
+            touch-action: pan-y; user-select: text; -webkit-user-select: text;
+        }
+        #tbSettings.open { transform: none; }
+        #tbSettingsBody #imageControls { margin-bottom: 1rem; }
+        .tb-modal { position: fixed; inset: 0; z-index: 90; background: rgba(0,0,0,0.82); display: none; align-items: center; justify-content: center; padding: 12px; touch-action: none; }
+        .tb-modal.open { display: flex; }
+        .tb-panel { background: #1f2221; border: 1px solid #333; border-radius: 18px; padding: 14px; width: 100%; max-width: 680px; box-shadow: 0 20px 50px rgba(0,0,0,0.6); }
+        #tbStage { position: relative; margin: 0 auto; touch-action: none; border-radius: 10px; overflow: hidden; }
+        #tbStage canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+        #tbToast {
+            position: fixed; left: 50%; bottom: 140px; transform: translateX(-50%); z-index: 95; pointer-events: none;
+            background: rgba(10,10,10,0.9); color: #eee; font-size: 12px; padding: 8px 14px; border-radius: 999px;
+            opacity: 0; transition: opacity .2s;
+        }
+        #tbToast.show { opacity: 1; }
     </style>
 </head>
 <body class="p-4 flex flex-col items-center">
 
-    <div class="w-full max-w-2xl bg-container p-6 md:p-8 rounded-2xl shadow-2xl">
+    <div class="view-switch mb-3" data-view-switch>
+        <button data-view="CLASSIC" onclick="setView('CLASSIC')">Classic</button>
+        <button data-view="TABLE" onclick="setView('TABLE')">Table</button>
+    </div>
+
+    <div id="classicRoot" class="w-full max-w-2xl bg-container p-6 md:p-8 rounded-2xl shadow-2xl">
         <h1 class="text-3xl font-bold text-center mb-2">Nano-Banana-Pro</h1>
 
         <div id="creditPanel" class="mb-4 bg-input rounded-xl border border-gray-700 px-4 py-3">
@@ -257,6 +352,85 @@
             </div>
         </div>
     </div>
+
+    <!-- ---- Table mode ---------------------------------------------------- -->
+    <div id="tableView">
+        <div id="tbBacklog"><span>Backlog</span></div>
+        <div id="tbLayer"></div>
+        <div class="tb-top">
+            <div class="tb-row">
+                <button id="tbTrash" class="tb-icon" title="Delete (drag here, or tap to delete selected)">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/></svg>
+                </button>
+                <div class="view-switch" data-view-switch>
+                    <button data-view="CLASSIC" onclick="setView('CLASSIC')">Classic</button>
+                    <button data-view="TABLE" onclick="setView('TABLE')">Table</button>
+                </div>
+                <button id="tbGear" class="tb-icon" title="Settings" onclick="tbOpenSettings(true)">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                </button>
+            </div>
+            <button id="tbClear" onclick="tbClearTable()">Clear Table</button>
+        </div>
+        <div class="tb-bottom" id="tbBottom">
+            <button id="tbPlus" title="Import photos" onclick="document.getElementById('tbFile').click()">
+                <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+            </button>
+            <input type="file" id="tbFile" multiple accept="image/*" class="hidden">
+            <div class="tb-bar">
+                <textarea id="tbPrompt" rows="1" placeholder="Describe the image or the edit…"></textarea>
+                <button id="tbGen" class="bg-accent" onclick="tbGenerate()">Generate</button>
+            </div>
+            <div id="tbHint"></div>
+        </div>
+        <div id="tbSettings">
+            <div class="flex justify-between items-center mb-4">
+                <h2 class="text-lg font-bold">Settings</h2>
+                <button class="tb-icon" onclick="tbOpenSettings(false)" title="Close">✕</button>
+            </div>
+            <div id="tbSettingsBody"></div>
+        </div>
+    </div>
+
+    <div id="tbMaskModal" class="tb-modal">
+        <div class="tb-panel">
+            <div class="flex justify-between items-center mb-2">
+                <span class="text-sm font-bold" id="tbMaskTitle">Paint the mask</span>
+                <span class="text-[10px] text-gray-500">Paint where the edit should happen</span>
+            </div>
+            <div id="tbStage"><canvas id="tbBaseC"></canvas><canvas id="tbMaskC" style="opacity:0.55"></canvas></div>
+            <div class="flex gap-2 mt-3 mb-3">
+                <button id="tbBrushBtn" onclick="tbSetBrush('brush')" class="flex-1 py-2 rounded-lg text-xs font-bold bg-gray-700 active-res">Brush</button>
+                <button id="tbEraseBtn" onclick="tbSetBrush('erase')" class="flex-1 py-2 rounded-lg text-xs font-bold bg-gray-700">Erase</button>
+                <button onclick="tbMaskUndoStep()" class="flex-1 py-2 rounded-lg text-xs font-bold bg-secondary">Undo</button>
+                <button onclick="tbMaskClear()" class="flex-1 py-2 rounded-lg text-xs font-bold bg-secondary">Clear</button>
+            </div>
+            <div class="flex items-center gap-3 mb-2">
+                <label class="text-[10px] text-gray-400 w-14">Brush</label>
+                <input id="tbBrushSize" type="range" min="6" max="120" value="42" class="flex-1 accent-teal-500">
+            </div>
+            <div class="flex items-center gap-3 mb-3">
+                <label class="text-[10px] text-gray-400 w-14">Feather</label>
+                <input id="tbFeather" type="range" min="0" max="40" value="12" class="flex-1 accent-teal-500">
+            </div>
+            <div class="flex gap-2">
+                <button onclick="tbMaskClose()" class="flex-1 py-3 bg-secondary rounded-xl text-sm font-bold">Cancel</button>
+                <button id="tbMaskFinish" onclick="tbMaskFinish()" class="flex-1 py-3 bg-accent rounded-xl text-sm font-bold">Finish</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="tbAskModal" class="tb-modal">
+        <div class="tb-panel" style="max-width:340px">
+            <p class="text-sm font-bold mb-1">Edit mask</p>
+            <p class="text-[11px] text-gray-400 mb-4">This image was generated with a mask.</p>
+            <button id="tbAskEdit" class="w-full py-3 bg-accent rounded-xl text-sm font-bold mb-2">Edit original mask</button>
+            <button id="tbAskNew" class="w-full py-3 bg-secondary rounded-xl text-sm font-bold mb-2" style="outline:2px solid #facc15">Create a new mask</button>
+            <button id="tbAskCancel" class="w-full py-2 text-xs text-gray-400">Cancel</button>
+        </div>
+    </div>
+
+    <div id="tbToast"></div>
 
     <div id="imageModal" class="modal" onclick="closeEnlarge(event)">
         <img id="modalImg" class="max-w-[95%] max-h-[90vh] shadow-2xl rounded-lg hidden">
@@ -1187,6 +1361,7 @@
         async function tuneInpaintFromHistory(id) {
             const rec = await getHistoryItem(id);
             if (!rec || !rec.inpaint) { alert('This entry has no stored tuning data.'); return; }
+            if (typeof tbView !== 'undefined' && tbView === 'TABLE') await setView('CLASSIC');
             const t = rec.inpaint;
             setMode('INPAINT');
             try {
@@ -1691,6 +1866,17 @@
                     meta.appendChild(saveBtn);
                 }
 
+                if (!isVideo) {
+                    const tblBtn = document.createElement('button');
+                    tblBtn.textContent = '＋ Table';
+                    tblBtn.className = 'mt-1 self-start text-[10px] text-gray-400 hover:text-teal-400 transition active:scale-95';
+                    tblBtn.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        tbAddFromHistory(item.id, tblBtn);
+                    });
+                    meta.appendChild(tblBtn);
+                }
+
                 if (item.isInpaint) {
                     const tuneBtn = document.createElement('button');
                     tuneBtn.textContent = '✎ Tune mask / feather';
@@ -2120,7 +2306,7 @@
         // adds a result slot on top of the output stack, and runs independently.
 
         let activeGenerations = 0;
-        const APP_BUILD = 'b34';
+        const APP_BUILD = 'b35';
         function updateGlobalStatus() {
             const s = document.getElementById('statusMsg');
             s.style.color = '#a0a0a0';
@@ -2914,7 +3100,7 @@
             if (document.visibilityState === 'hidden' && draftTimer) saveDraftNow();
         });
         window.addEventListener('pagehide', () => { if (draftTimer) saveDraftNow(); });
-        restoreDraft();
+        var draftReady = restoreDraft();
 
         function handleGenerate() {
             unlockAudio();
@@ -2942,6 +3128,823 @@
             const slot = createSlot();
             runGeneration(slot, prompt, opts);
         }
+    </script>
+    <script>
+        // ---- Table mode -----------------------------------------------------
+        // A dark canvas where imported and generated images lie around like
+        // prints. Tap selects (order matters: the first one is the base),
+        // long-press paints a mask, dragging into the top third parks an image
+        // small in the backlog. The table is persisted in IndexedDB (draft
+        // store) and is the source of truth when switching to Classic: the
+        // selection becomes Classic's uploads, and Classic's uploads become
+        // the selection when coming back.
+
+        const TB_VIEW_KEY = 'nb_view';
+        const TB_META_KEY = 'table_meta';
+        const TB_BLOB_PREFIX = 'tbl:';
+        const TB_LONGPRESS_MS = 480;
+        const TB_DRAG_SLOP = 8;
+        const TB_SMALL = 0.3;
+        const TB_MOVE_IDS = ['creditPanel', 'keyDetails', 'imageControls', 'statusMsg', 'historyDetails'];
+
+        const TB_SCALE_PROP = !!(window.CSS && CSS.supports && CSS.supports('scale', '1'));
+        let tbView = 'CLASSIC';
+        let tbItems = [];       // {id,url,thumb,w,h,x,y,rot,small,z,kind,mask,gen,historyId,pending,error,status}
+        let tbSel = [];         // selected ids, in selection order
+        let tbZ = 1;
+        let tbLoaded = false;
+        const tbLayer = document.getElementById('tbLayer');
+        const tbView$ = document.getElementById('tableView');
+        const tbPromptEl = document.getElementById('tbPrompt');
+        const tbEls = new Map();
+
+        function tbNewId() { return Date.now() + Math.random(); }
+        function tbFind(id) { return tbItems.find(i => i.id === id); }
+        function tbRand(a, b) { return a + Math.random() * (b - a); }
+        function tbMime(url) { return (url.match(/^data:([^;,]+)/) || [])[1] || 'image/png'; }
+
+        function tbToast(msg) {
+            const t = document.getElementById('tbToast');
+            t.textContent = msg;
+            t.classList.add('show');
+            clearTimeout(tbToast._t);
+            tbToast._t = setTimeout(() => t.classList.remove('show'), 1800);
+        }
+
+        // ---- Persistence -------------------------------------------------
+        function tbIdb(op, key, value) {
+            return openHistoryDb().then((db) => new Promise((resolve) => {
+                const tx = db.transaction(DRAFT_STORE, op === 'get' ? 'readonly' : 'readwrite');
+                const store = tx.objectStore(DRAFT_STORE);
+                const rq = op === 'get' ? store.get(key) : op === 'delete' ? store.delete(key) : store.put(value, key);
+                let result = null;
+                rq.onsuccess = () => { result = rq.result; };
+                tx.oncomplete = () => { db.close(); resolve(op === 'get' ? result : true); };
+                tx.onerror = tx.onabort = () => { db.close(); resolve(null); };
+            })).catch((e) => { console.warn('table ' + op + ' failed:', e); return null; });
+        }
+
+        let tbMetaTimer = null;
+        function tbSaveMeta() {
+            clearTimeout(tbMetaTimer);
+            tbMetaTimer = setTimeout(tbSaveMetaNow, 300);
+        }
+        function tbSaveMetaNow() {
+            clearTimeout(tbMetaTimer);
+            tbMetaTimer = null;
+            if (!tbLoaded) return;
+            const items = tbItems.filter(i => !i.pending && !i.error).map(i => ({
+                id: i.id, w: i.w, h: i.h, x: i.x, y: i.y, rot: i.rot, small: !!i.small, z: i.z, kind: i.kind || 'normal', historyId: i.historyId ?? null
+            }));
+            const ids = new Set(items.map(i => i.id));
+            return tbIdb('put', TB_META_KEY, { items, sel: tbSel.filter(id => ids.has(id)) });
+        }
+        function tbSaveBlob(item) {
+            return tbIdb('put', TB_BLOB_PREFIX + item.id, { url: item.url, thumb: item.thumb, mask: item.mask || null, gen: item.gen || null });
+        }
+        async function tbLoad() {
+            const meta = await tbIdb('get', TB_META_KEY);
+            const list = (meta && Array.isArray(meta.items)) ? meta.items : [];
+            const loaded = await Promise.all(list.map(async (m) => {
+                const b = await tbIdb('get', TB_BLOB_PREFIX + m.id);
+                if (!b || !b.url) return null;
+                return { ...m, url: b.url, thumb: b.thumb || b.url, mask: b.mask || null, gen: b.gen || null };
+            }));
+            // Anything added while loading (e.g. a fast import) stays on top.
+            tbItems = loaded.filter(Boolean).concat(tbItems);
+            const ids = new Set(tbItems.map(i => i.id));
+            tbSel = ((meta && meta.sel) || []).filter(id => ids.has(id)).concat(tbSel.filter(id => ids.has(id)));
+            tbSel = [...new Set(tbSel)];
+            tbZ = tbItems.reduce((m, i) => Math.max(m, i.z || 0), 0) + 1;
+            tbLoaded = true;
+            tbSaveMeta();
+            tbRender();
+        }
+
+        // ---- Items -------------------------------------------------------
+        function tbPlace(item) {
+            item.x = tbRand(0.3, 0.7);
+            item.y = tbRand(0.45, 0.68);
+            item.rot = tbRand(-20, 20);
+            item.small = false;
+            item.z = tbZ++;
+            return item;
+        }
+
+        async function tbAddImage(url, w, h, extra) {
+            const item = tbPlace({ id: tbNewId(), url, w: w || 1, h: h || 1, kind: 'normal', mask: null, gen: null, ...(extra || {}) });
+            item.thumb = await makeImageThumb(url).catch(() => null) || url;
+            tbItems.push(item);
+            tbSaveBlob(item);
+            tbSaveMeta();
+            tbRender();
+            return item;
+        }
+
+        function tbRemove(id) {
+            const el = tbEls.get(id);
+            if (el) { el.remove(); tbEls.delete(id); }
+            tbItems = tbItems.filter(i => i.id !== id);
+            tbSel = tbSel.filter(s => s !== id);
+            tbIdb('delete', TB_BLOB_PREFIX + id);
+            tbSaveMeta();
+            tbRender();
+        }
+
+        function tbSelected() { return tbSel.map(tbFind).filter(i => i && !i.pending && !i.error); }
+
+        function tbToggleSelect(item) {
+            const wasFirst = tbSel[0];
+            if (tbSel.includes(item.id)) {
+                tbSel = tbSel.filter(s => s !== item.id);
+            } else {
+                if (item.kind === 'masked') {
+                    // Only one masked image can take part in a generation.
+                    tbSel = tbSel.filter(s => { const o = tbFind(s); return !o || o.kind !== 'masked'; });
+                }
+                tbSel.push(item.id);
+            }
+            if (tbSel[0] !== wasFirst) tbSyncRatio();
+            tbSaveMeta();
+            tbRender();
+        }
+
+        // Same as Classic: the first (base) image picks the aspect ratio.
+        function tbSyncRatio() {
+            const first = tbFind(tbSel[0]);
+            if (first && first.w && first.h) {
+                ratioSelect.value = findClosestRatio(first.w / first.h).value;
+                scheduleDraftSave();
+            }
+        }
+
+        function tbBaseSize() {
+            const r = tbView$.getBoundingClientRect();
+            return Math.max(120, Math.min(380, Math.min(r.width, r.height) * 0.42));
+        }
+
+        function tbApplyTransform(el, item) {
+            const lift = item._drag ? 1.06 : tbSel.includes(item.id) ? 1.04 : 1;
+            const s = (item.small ? TB_SMALL : 1) * lift;
+            el.style.left = (item.x * 100) + '%';
+            el.style.top = (item.y * 100) + '%';
+            el.style.zIndex = item.z || 1;
+            if (TB_SCALE_PROP) {
+                el.style.transform = `rotate(${item.rot || 0}deg)`;
+                el.style.scale = String(s);
+            } else {
+                el.style.transform = `rotate(${item.rot || 0}deg) scale(${s})`;
+            }
+        }
+
+        function tbRender() {
+            const base = tbBaseSize();
+            const seen = new Set();
+            tbItems.forEach((item) => {
+                seen.add(item.id);
+                let el = tbEls.get(item.id);
+                if (!el) {
+                    el = document.createElement('div');
+                    el.className = 'tb-item';
+                    el.dataset.id = item.id;
+                    el.innerHTML = '<img draggable="false" alt=""><img class="tb-maskov" draggable="false" alt="" style="display:none"><div class="tb-pending" style="display:none"><div class="slot-ring"></div><div class="tb-st"></div></div><div class="tb-badge" style="display:none"></div>';
+                    el.addEventListener('pointerdown', (e) => tbPointerDown(e, item.id));
+                    el.addEventListener('contextmenu', (e) => e.preventDefault());
+                    tbLayer.appendChild(el);
+                    tbEls.set(item.id, el);
+                }
+                const ar = (item.w && item.h) ? item.w / item.h : 1;
+                const w = ar >= 1 ? base : base * ar;
+                const h = ar >= 1 ? base / ar : base;
+                el.style.width = w + 'px';
+                el.style.height = h + 'px';
+                el.style.marginLeft = (-w / 2) + 'px';
+                el.style.marginTop = (-h / 2) + 'px';
+                const [img, ov, pend, badge] = el.children;
+                const src = item.thumb || item.url;
+                if (src && img.getAttribute('src') !== src) img.src = src;
+                img.style.visibility = src ? 'visible' : 'hidden';
+                const showMask = item.kind === 'masked' && item.mask && item.mask.mask;
+                ov.style.display = showMask ? 'block' : 'none';
+                if (showMask && ov.getAttribute('src') !== item.mask.mask) ov.src = item.mask.mask;
+                pend.style.display = (item.pending || item.error) ? 'flex' : 'none';
+                pend.classList.toggle('err', !!item.error);
+                pend.querySelector('.slot-ring').style.display = item.pending ? 'block' : 'none';
+                pend.querySelector('.tb-st').textContent = item.error ? `${item.error}\nTap to retry` : (item.status || '');
+                pend.querySelector('.tb-st').style.whiteSpace = 'pre-line';
+                const idx = tbSel.indexOf(item.id);
+                const num = tbSel.slice(0, idx + 1).filter(id => (tbFind(id) || {}).kind !== 'masked').length;
+                badge.style.display = idx >= 0 ? 'flex' : 'none';
+                badge.textContent = item.kind === 'masked' ? 'M' : String(num);
+                badge.style.transform = `scale(${item.small ? 1 / TB_SMALL : 1})`;
+                badge.style.transformOrigin = 'top left';
+                el.classList.toggle('sel', idx >= 0);
+                el.classList.toggle('masked', item.kind === 'masked');
+                el.classList.toggle('genmask', item.kind === 'genmask');
+                el.classList.toggle('dragging', !!item._drag);
+                tbApplyTransform(el, item);
+            });
+            for (const [id, el] of tbEls) if (!seen.has(id)) { el.remove(); tbEls.delete(id); }
+            const n = tbSelected().length;
+            const masked = tbSelected().find(i => i.kind === 'masked');
+            document.getElementById('tbHint').textContent = !tbItems.length ? 'Tap + to import photos'
+                : n === 0 ? 'Nothing selected — generates from the prompt only'
+                : masked ? `Inpaint with mask${n > 1 ? ` + ${n - 1} reference${n > 2 ? 's' : ''}` : ''}`
+                : `${n} selected · #1 is the base`;
+        }
+
+        // ---- Gestures ----------------------------------------------------
+        let tbPtr = null;
+
+        function tbOverTrash(x, y) {
+            const r = document.getElementById('tbTrash').getBoundingClientRect();
+            return x >= r.left - 24 && x <= r.right + 24 && y >= r.top - 24 && y <= r.bottom + 24;
+        }
+
+        function tbPointerDown(e, id) {
+            if (tbPtr || (e.pointerType === 'mouse' && e.button !== 0)) return;
+            const item = tbFind(id);
+            if (!item) return;
+            e.preventDefault();
+            const r = tbView$.getBoundingClientRect();
+            tbPtr = {
+                id, pid: e.pointerId, sx: e.clientX, sy: e.clientY,
+                ox: item.x, oy: item.y, W: r.width, H: r.height, top: r.top,
+                moved: false, long: false,
+                timer: setTimeout(() => {
+                    if (!tbPtr || tbPtr.moved) return;
+                    tbPtr.long = true;
+                    if (navigator.vibrate) navigator.vibrate(30);
+                    tbLongPress(item);
+                }, TB_LONGPRESS_MS)
+            };
+            try { tbView$.setPointerCapture(e.pointerId); } catch (_) {}
+        }
+
+        tbView$.addEventListener('pointermove', (e) => {
+            if (!tbPtr || e.pointerId !== tbPtr.pid || tbPtr.long) return;
+            const dx = e.clientX - tbPtr.sx, dy = e.clientY - tbPtr.sy;
+            const item = tbFind(tbPtr.id);
+            if (!item) return;
+            if (!tbPtr.moved) {
+                if (Math.hypot(dx, dy) < TB_DRAG_SLOP) return;
+                tbPtr.moved = true;
+                clearTimeout(tbPtr.timer);
+                item._drag = true;
+                item.z = tbZ++;
+                tbEls.get(item.id).classList.add('dragging');
+            }
+            item.x = Math.min(1, Math.max(0, tbPtr.ox + dx / tbPtr.W));
+            item.y = Math.min(1, Math.max(0, tbPtr.oy + dy / tbPtr.H));
+            const small = (e.clientY - tbPtr.top) < tbPtr.H / 3;
+            item.small = small;
+            document.getElementById('tbBacklog').classList.toggle('hot', small);
+            document.getElementById('tbTrash').classList.toggle('hot', tbOverTrash(e.clientX, e.clientY));
+            tbApplyTransform(tbEls.get(item.id), item);
+        });
+
+        function tbPointerEnd(e) {
+            if (!tbPtr || e.pointerId !== tbPtr.pid) return;
+            const p = tbPtr;
+            tbPtr = null;
+            clearTimeout(p.timer);
+            document.getElementById('tbBacklog').classList.remove('hot');
+            document.getElementById('tbTrash').classList.remove('hot');
+            const item = tbFind(p.id);
+            if (!item) return;
+            if (p.moved) {
+                item._drag = false;
+                if (e.type !== 'pointercancel' && tbOverTrash(e.clientX, e.clientY)) {
+                    tbRemove(item.id);
+                    return;
+                }
+                tbSaveMeta();
+                tbRender();
+                return;
+            }
+            if (p.long || e.type === 'pointercancel') return;
+            // Tap
+            if (item.error) { tbRetry(item); return; }
+            if (item.pending) return;
+            tbToggleSelect(item);
+        }
+        tbView$.addEventListener('pointerup', tbPointerEnd);
+        tbView$.addEventListener('pointercancel', tbPointerEnd);
+        tbView$.addEventListener('contextmenu', (e) => { if (!e.target.closest('#tbSettings')) e.preventDefault(); });
+
+        document.getElementById('tbTrash').addEventListener('click', () => {
+            const sel = tbSelected();
+            if (!sel.length) { tbToast('Drag an image onto the trash to delete it'); return; }
+            if (!confirm(`Delete ${sel.length} selected image${sel.length > 1 ? 's' : ''} from the table?`)) return;
+            sel.forEach(i => tbRemove(i.id));
+        });
+
+        function tbClearTable() {
+            if (!tbItems.length) return;
+            if (!confirm('Clear the whole table? (History is kept.)')) return;
+            tbItems.forEach(i => tbIdb('delete', TB_BLOB_PREFIX + i.id));
+            tbItems = [];
+            tbSel = [];
+            tbSaveMetaNow();
+            tbRender();
+        }
+
+        window.addEventListener('resize', () => { if (tbView === 'TABLE') tbRender(); });
+
+        // ---- Import ------------------------------------------------------
+        document.getElementById('tbFile').addEventListener('change', (e) => {
+            const files = Array.from(e.target.files || []);
+            e.target.value = '';
+            files.forEach((file) => {
+                if (!(file.type || '').startsWith('image/')) return;
+                const reader = new FileReader();
+                reader.onload = async (ev) => {
+                    const url = ev.target.result;
+                    try {
+                        const img = await loadImageEl(url);
+                        await tbAddImage(url, img.naturalWidth, img.naturalHeight);
+                    } catch (_) { tbToast('Could not read ' + file.name); }
+                };
+                reader.readAsDataURL(file);
+            });
+        });
+
+        async function tbAddFromHistory(id, btn) {
+            const rec = await getHistoryItem(id);
+            if (!rec || !rec.dataUrl) return;
+            let w = 1, h = 1;
+            try { const im = await loadImageEl(rec.dataUrl); w = im.naturalWidth; h = im.naturalHeight; } catch (_) {}
+            const extra = { historyId: rec.id };
+            if (rec.inpaint && rec.inpaint.raw) {
+                extra.kind = 'genmask';
+                extra.gen = { ...rec.inpaint };
+            }
+            await tbAddImage(rec.dataUrl, w, h, extra);
+            if (btn) { const t = btn.textContent; btn.textContent = '✓ On table'; setTimeout(() => { btn.textContent = t; }, 1400); }
+            if (tbView === 'TABLE') tbToast('Added to table');
+        }
+
+        // ---- Long press / mask editor ------------------------------------
+        function tbLongPress(item) {
+            if (item.pending || item.error) return;
+            if (item.kind === 'masked') {
+                tbOpenMask({ mode: 'edit', itemId: item.id }, item.mask.base, item.mask.mask, item.mask.feather);
+            } else if (item.kind === 'genmask' && item.gen) {
+                tbAsk(item);
+            } else {
+                tbOpenMask({ mode: 'new', itemId: item.id }, item.url, null, 12);
+            }
+        }
+
+        function tbAsk(item) {
+            const m = document.getElementById('tbAskModal');
+            const close = () => m.classList.remove('open');
+            document.getElementById('tbAskEdit').onclick = () => {
+                close();
+                tbOpenMask({ mode: 'regen', itemId: item.id }, item.gen.base, item.gen.mask, item.gen.feather);
+            };
+            document.getElementById('tbAskNew').onclick = () => {
+                close();
+                tbOpenMask({ mode: 'new', itemId: item.id }, item.url, null, 12);
+            };
+            document.getElementById('tbAskCancel').onclick = close;
+            m.onclick = (e) => { if (e.target === m) close(); };
+            m.classList.add('open');
+        }
+
+        const tbBaseC = document.getElementById('tbBaseC');
+        const tbMaskC = document.getElementById('tbMaskC');
+        let tbMaskSession = null;
+        let tbBrushMode = 'brush';
+        const tbMaskUndo = [];
+        let tbPainting = false;
+
+        function tbSetBrush(m) {
+            tbBrushMode = m;
+            document.getElementById('tbBrushBtn').classList.toggle('active-res', m === 'brush');
+            document.getElementById('tbEraseBtn').classList.toggle('active-res', m === 'erase');
+        }
+
+        function tbFitStage() {
+            if (!tbMaskSession) return;
+            const { w, h } = tbMaskSession;
+            const maxW = Math.min(window.innerWidth - 52, 652);
+            const maxH = window.innerHeight * 0.56;
+            const s = Math.min(maxW / w, maxH / h);
+            const st = document.getElementById('tbStage');
+            st.style.width = Math.round(w * s) + 'px';
+            st.style.height = Math.round(h * s) + 'px';
+        }
+        window.addEventListener('resize', tbFitStage);
+
+        async function tbOpenMask(session, srcUrl, maskUrl, feather) {
+            let img;
+            try { img = await loadImageEl(srcUrl); } catch (_) { tbToast('Could not open image'); return; }
+            // Same downscale as Classic's inpaint editor (long edge <= 2048).
+            const scale = Math.min(1, 2048 / Math.max(img.naturalWidth, img.naturalHeight));
+            const w = Math.max(1, Math.round(img.naturalWidth * scale));
+            const h = Math.max(1, Math.round(img.naturalHeight * scale));
+            tbBaseC.width = tbMaskC.width = w;
+            tbBaseC.height = tbMaskC.height = h;
+            tbBaseC.getContext('2d').drawImage(img, 0, 0, w, h);
+            const mctx = tbMaskC.getContext('2d');
+            mctx.clearRect(0, 0, w, h);
+            if (maskUrl) {
+                try { mctx.drawImage(await loadImageEl(maskUrl), 0, 0, w, h); } catch (_) {}
+            }
+            tbMaskUndo.length = 0;
+            tbMaskSession = { ...session, w, h, base: tbBaseC.toDataURL('image/jpeg', 0.92) };
+            document.getElementById('tbFeather').value = feather ?? 12;
+            document.getElementById('tbMaskTitle').textContent =
+                session.mode === 'regen' ? 'Edit original mask' : session.mode === 'edit' ? 'Edit mask' : 'Paint a new mask';
+            document.getElementById('tbMaskFinish').textContent = session.mode === 'regen' ? 'Finish (re-blend)' : 'Finish';
+            tbSetBrush('brush');
+            document.getElementById('tbMaskModal').classList.add('open');
+            tbFitStage();
+        }
+
+        function tbMaskClose() {
+            document.getElementById('tbMaskModal').classList.remove('open');
+            tbMaskSession = null;
+        }
+
+        function tbMaskPos(e) {
+            const r = tbMaskC.getBoundingClientRect();
+            return { x: (e.clientX - r.left) * (tbMaskC.width / r.width), y: (e.clientY - r.top) * (tbMaskC.height / r.height) };
+        }
+        function tbPushUndo() {
+            try {
+                tbMaskUndo.push(tbMaskC.getContext('2d').getImageData(0, 0, tbMaskC.width, tbMaskC.height));
+                if (tbMaskUndo.length > 20) tbMaskUndo.shift();
+            } catch (_) {}
+        }
+        function tbMaskUndoStep() { const p = tbMaskUndo.pop(); if (p) tbMaskC.getContext('2d').putImageData(p, 0, 0); }
+        function tbMaskClear() { tbPushUndo(); tbMaskC.getContext('2d').clearRect(0, 0, tbMaskC.width, tbMaskC.height); }
+
+        tbMaskC.addEventListener('pointerdown', (e) => {
+            if (!tbMaskSession) return;
+            e.preventDefault();
+            tbMaskC.setPointerCapture(e.pointerId);
+            tbPushUndo();
+            tbPainting = true;
+            const ctx = tbMaskC.getContext('2d');
+            const r = tbMaskC.getBoundingClientRect();
+            const lw = parseInt(document.getElementById('tbBrushSize').value, 10) * (tbMaskC.width / r.width);
+            ctx.lineCap = ctx.lineJoin = 'round';
+            ctx.lineWidth = lw;
+            ctx.globalCompositeOperation = tbBrushMode === 'erase' ? 'destination-out' : 'source-over';
+            ctx.strokeStyle = ctx.fillStyle = 'rgb(255,40,70)';
+            const { x, y } = tbMaskPos(e);
+            ctx.beginPath(); ctx.arc(x, y, lw / 2, 0, Math.PI * 2); ctx.fill();
+            ctx.beginPath(); ctx.moveTo(x, y);
+        });
+        tbMaskC.addEventListener('pointermove', (e) => {
+            if (!tbPainting) return;
+            e.preventDefault();
+            const { x, y } = tbMaskPos(e);
+            const ctx = tbMaskC.getContext('2d');
+            ctx.lineTo(x, y); ctx.stroke();
+        });
+        const tbEndPaint = () => { tbPainting = false; tbMaskC.getContext('2d').globalCompositeOperation = 'source-over'; };
+        tbMaskC.addEventListener('pointerup', tbEndPaint);
+        tbMaskC.addEventListener('pointercancel', tbEndPaint);
+
+        function tbMaskEmpty() {
+            try {
+                const d = tbMaskC.getContext('2d').getImageData(0, 0, tbMaskC.width, tbMaskC.height).data;
+                for (let i = 3; i < d.length; i += 4) if (d[i] > 0) return false;
+                return true;
+            } catch (_) { return true; }
+        }
+
+        async function tbMaskFinish() {
+            const s = tbMaskSession;
+            if (!s) return;
+            if (tbMaskEmpty()) { tbToast('Paint the area to change first'); return; }
+            const mask = { base: s.base, mask: tbMaskC.toDataURL('image/png'), feather: parseInt(document.getElementById('tbFeather').value, 10) || 0, w: s.w, h: s.h };
+            const src = tbFind(s.itemId);
+            if (s.mode === 'edit' && src) {
+                src.mask = mask;
+                tbSaveBlob(src);
+                tbMaskClose();
+                tbRender();
+                return;
+            }
+            if (s.mode === 'regen' && src && src.gen) {
+                const btn = document.getElementById('tbMaskFinish');
+                btn.textContent = 'Blending…';
+                try {
+                    // Re-composite the same raw output through the new mask —
+                    // no new generation, no cost.
+                    const url = await compositeInpaint(src.gen.raw, { base: src.gen.base, mask: mask.mask, feather: mask.feather, w: src.gen.w, h: src.gen.h });
+                    src.gen = { ...src.gen, mask: mask.mask, feather: mask.feather };
+                    src.url = url;
+                    src.thumb = await makeImageThumb(url).catch(() => null) || url;
+                    tbSaveBlob(src);
+                    if (src.historyId != null) updateHistoryImage(src.historyId, url);
+                    tbMaskClose();
+                    tbRender();
+                } catch (e) {
+                    btn.textContent = 'Finish (re-blend)';
+                    tbToast('Re-blend failed: ' + (e.message || e));
+                }
+                return;
+            }
+            // New mask → a yellow copy of the image carrying the mask.
+            if (!src) { tbMaskClose(); return; }
+            const copy = {
+                id: tbNewId(), url: src.url, thumb: src.thumb, w: s.w, h: s.h, kind: 'masked', mask, gen: null,
+                x: Math.min(0.95, src.x + 0.06), y: Math.min(0.95, src.y + 0.04), rot: tbRand(-20, 20), small: src.small, z: tbZ++
+            };
+            tbItems.push(copy);
+            tbSel = tbSel.filter(id => { const o = tbFind(id); return id !== src.id && (!o || o.kind !== 'masked'); });
+            tbSel.unshift(copy.id);
+            tbSaveBlob(copy);
+            tbSaveMeta();
+            tbMaskClose();
+            tbRender();
+        }
+
+        // ---- Generate ----------------------------------------------------
+        function tbPreflight(prompt) {
+            if (!getClientId() && !getOmniToken() && !getProxyUrl()) {
+                playRisingBing(true);
+                tbOpenSettings(true);
+                document.getElementById('keyDetails').open = true;
+                alert('Sign in with Google first — open the panel and set your OAuth Client ID.');
+                return false;
+            }
+            if (!getProject()) {
+                playRisingBing(true);
+                tbOpenSettings(true);
+                document.getElementById('keyDetails').open = true;
+                alert('Google Cloud project ID required. Add it in the panel.');
+                return false;
+            }
+            if (!prompt) { playRisingBing(true); tbToast('Prompt required'); tbPromptEl.focus(); return false; }
+            return true;
+        }
+
+        function tbMarked(m) {
+            return Promise.all([loadImageEl(m.base), loadImageEl(m.mask)]).then(([b, k]) => {
+                const c = document.createElement('canvas');
+                c.width = m.w; c.height = m.h;
+                const ctx = c.getContext('2d');
+                ctx.drawImage(b, 0, 0, m.w, m.h);
+                ctx.drawImage(k, 0, 0, m.w, m.h);
+                return c.toDataURL('image/jpeg', 0.92);
+            });
+        }
+
+        async function tbGenerate() {
+            unlockAudio();
+            const prompt = tbPromptEl.value.trim();
+            if (!tbPreflight(prompt)) return;
+            const sel = tbSelected();
+            const masked = sel.find(i => i.kind === 'masked');
+            const refs = sel.filter(i => i !== masked).slice(0, 20);
+            const opts = {
+                mode: masked ? 'INPAINT' : 'IMAGE',
+                imageModel: currentModel,
+                res: currentRes,
+                ratio: ratioSelect.value,
+                uploads: refs.map(i => ({ data: i.url.split(',')[1], mime: tbMime(i.url), isVideo: false, w: i.w, h: i.h }))
+            };
+            let ar;
+            if (masked) {
+                const m = masked.mask;
+                opts.inpaint = { base: m.base, marked: await tbMarked(m), mask: m.mask, feather: m.feather, w: m.w, h: m.h };
+                ar = m.w / m.h;
+            } else {
+                const r = API_SUPPORTED_RATIOS.find(x => x.value === opts.ratio);
+                ar = r ? r.ratio : 1;
+            }
+            const item = tbPlace({ id: tbNewId(), url: null, thumb: null, w: Math.round(1000 * ar), h: 1000, kind: 'normal', pending: true, status: 'Generating…' });
+            item._job = { prompt, opts };
+            tbItems.push(item);
+            tbRender();
+            tbRun(item);
+        }
+
+        function tbRetry(item) {
+            if (!item._job) { tbRemove(item.id); return; }
+            item.error = null;
+            item.pending = true;
+            item.status = 'Retrying…';
+            tbRender();
+            tbRun(item);
+        }
+
+        async function tbRun(item) {
+            const { prompt, opts } = item._job;
+            const slot = { setStatus(t) { item.status = t.replace(/\s*\(safe to background\)/, ''); if (tbFind(item.id)) tbRender(); } };
+            genStarted();
+            let charged = 0;
+            try {
+                charged = chargeCredit(priceForImage(opts.imageModel, opts.res));
+                const out = opts.mode === 'INPAINT' ? await generateInpaint(prompt, opts, slot) : await generateImage(prompt, opts, slot);
+                adjustCredit((out.cost || charged) - charged);
+                const histRec = { type: 'image', dataUrl: out.dataUrl, prompt: out.type === 'inpaint' ? `[inpaint] ${prompt}` : prompt, model: out.model, res: out.res, ratio: out.ratio, timestamp: Date.now() };
+                if (out.type === 'inpaint') {
+                    histRec.inpaint = { raw: out.rawUrl, base: opts.inpaint.base, mask: opts.inpaint.mask, feather: opts.inpaint.feather, w: opts.inpaint.w, h: opts.inpaint.h };
+                }
+                const histP = addToHistory(histRec);
+                histP.then(() => refreshHistoryUI());
+                // The card may have been trashed while generating — the result
+                // still lands in History.
+                if (tbFind(item.id)) {
+                    let w = item.w, h = item.h;
+                    try { const im = await loadImageEl(out.dataUrl); w = im.naturalWidth; h = im.naturalHeight; } catch (_) {}
+                    item.url = out.dataUrl;
+                    item.thumb = await makeImageThumb(out.dataUrl).catch(() => null) || out.dataUrl;
+                    item.w = w; item.h = h;
+                    item.pending = false; item.status = '';
+                    delete item._job;
+                    if (out.type === 'inpaint') { item.kind = 'genmask'; item.gen = { ...histRec.inpaint }; }
+                    item.historyId = await histP;
+                    tbSaveBlob(item);
+                    tbSaveMeta();
+                    tbRender();
+                }
+                playRisingBing(false);
+                if (navigator.vibrate) navigator.vibrate(120);
+            } catch (err) {
+                console.error('Table generation failed:', err);
+                refundCredit(charged);
+                item.pending = false;
+                item.error = `Error: ${(err && err.message) || err}`.slice(0, 160);
+                if (tbFind(item.id)) tbRender();
+                playRisingBing(true);
+                if (navigator.vibrate) navigator.vibrate(120);
+            } finally {
+                genEnded();
+            }
+        }
+
+        // ---- Settings sheet (borrows Classic's controls) -----------------
+        const tbPlaceholders = {};
+        function tbAdoptControls() {
+            const body = document.getElementById('tbSettingsBody');
+            TB_MOVE_IDS.forEach((id) => {
+                const el = document.getElementById(id);
+                if (!el) return;
+                if (!tbPlaceholders[id]) {
+                    const ph = document.createComment('slot:' + id);
+                    el.parentNode.insertBefore(ph, el);
+                    tbPlaceholders[id] = ph;
+                }
+                body.appendChild(el);
+            });
+            // Table mode is image-only: model, resolution and ratio always show.
+            document.getElementById('imageControls').classList.remove('hidden');
+            ratioSelect.classList.remove('hidden');
+        }
+        function tbReturnControls() {
+            TB_MOVE_IDS.forEach((id) => {
+                const el = document.getElementById(id), ph = tbPlaceholders[id];
+                if (el && ph && ph.parentNode) ph.parentNode.insertBefore(el, ph.nextSibling);
+            });
+            document.getElementById('imageControls').classList.toggle('hidden', currentMode === 'VIDEO');
+            ratioSelect.classList.toggle('hidden', currentMode === 'INPAINT');
+        }
+        function tbOpenSettings(open) {
+            document.getElementById('tbSettings').classList.toggle('open', !!open);
+        }
+
+        // ---- Classic ⇄ Table sync ----------------------------------------
+        function tbAsUpload(i, url) {
+            const u = url || i.url;
+            return { id: i.id, data: u.split(',')[1], mime: tbMime(u), url: u, isVideo: false, w: i.w, h: i.h };
+        }
+
+        async function tbToClassic() {
+            const sel = tbSelected();
+            const masked = sel.find(i => i.kind === 'masked');
+            const others = sel.filter(i => i !== masked);
+            const videos = uploadedImages.filter(m => m.isVideo);
+            inpaintHeldRef = null;
+            if (masked) {
+                const m = masked.mask;
+                uploadedImages = [{ ...tbAsUpload(masked, m.base), w: m.w, h: m.h }].concat(others.map(i => tbAsUpload(i)), videos).slice(0, 20);
+                renderPreviews();
+                inpaintSrcUrl = null;
+                if (currentMode !== 'INPAINT') setMode('INPAINT'); else moveFirstRefToEditor();
+                try {
+                    await loadInpaintBase(m.base);
+                    maskCtx().drawImage(await loadImageEl(m.mask), 0, 0, maskCanvas.width, maskCanvas.height);
+                    document.getElementById('featherRange').value = m.feather || 0;
+                    scheduleDraftSave();
+                } catch (e) { console.warn('mask transfer failed:', e); }
+            } else {
+                uploadedImages = others.map(i => tbAsUpload(i)).concat(videos).slice(0, 20);
+                renderPreviews();
+                if (currentMode === 'INPAINT') setMode('IMAGE');
+            }
+            if (sel.length) tbSyncRatio();
+        }
+
+        async function tbFromClassic() {
+            const newSel = [];
+            let skipHeld = false;
+            if (currentMode === 'INPAINT' && inpaintBaseUrl && !maskIsEmpty()) {
+                const mask = { base: inpaintBaseUrl, mask: maskCanvas.toDataURL('image/png'), feather: parseInt(document.getElementById('featherRange').value, 10) || 0, w: inpaintW, h: inpaintH };
+                const heldIsBase = inpaintHeldRef && inpaintHeldRef.url === inpaintSrcUrl;
+                let it = heldIsBase ? tbItems.find(i => i.id === inpaintHeldRef.id && i.kind === 'masked') : null;
+                if (it) {
+                    it.mask = mask;
+                    tbSaveBlob(it);
+                } else {
+                    it = await tbAddImage(inpaintBaseUrl, inpaintW, inpaintH, { kind: 'masked', mask });
+                }
+                newSel.push(it.id);
+                skipHeld = heldIsBase;
+            }
+            const loaded = ((inpaintHeldRef && !skipHeld) ? [inpaintHeldRef] : []).concat(uploadedImages).filter(m => !m.isVideo && m.url);
+            for (const m of loaded) {
+                let it = tbItems.find(i => i.id === m.id && !i.pending)
+                    || tbItems.find(i => i.url === m.url && i.kind !== 'masked' && !i.pending);
+                if (!it) it = await tbAddImage(m.url, m.w, m.h, { id: m.id });
+                newSel.push(it.id);
+            }
+            const masks = newSel.filter(id => (tbFind(id) || {}).kind === 'masked');
+            tbSel = [...new Set(newSel)].filter(id => (tbFind(id) || {}).kind !== 'masked' || id === masks[0]);
+            tbSaveMeta();
+            tbRender();
+        }
+
+        // ---- View switching ----------------------------------------------
+        let tbSwitching = false;
+        async function setView(v, opts) {
+            v = v === 'TABLE' ? 'TABLE' : 'CLASSIC';
+            if (tbSwitching) return;
+            const first = !!(opts && opts.initial);
+            if (v === tbView && !first) return;
+            tbSwitching = true;
+            try {
+                if (!first) await draftReady;
+                if (v === 'TABLE') {
+                    if (!first) await tbFromClassic();
+                    tbPromptEl.value = document.getElementById('prompt').value;
+                    tbAdoptControls();
+                    document.body.classList.add('table-on');
+                } else {
+                    tbOpenSettings(false);
+                    tbReturnControls();
+                    document.body.classList.remove('table-on');
+                    if (!first) await tbToClassic();
+                }
+                tbView = v;
+                document.querySelectorAll('[data-view-switch] button').forEach(b => b.classList.toggle('on', b.dataset.view === v));
+                try { localStorage.setItem(TB_VIEW_KEY, v); } catch (_) {}
+                if (v === 'TABLE') { tbRender(); tbAutoGrow(); }
+            } finally {
+                tbSwitching = false;
+            }
+        }
+
+        // ---- Prompt (mirrors Classic's) ----------------------------------
+        function tbAutoGrow() {
+            tbPromptEl.style.height = 'auto';
+            tbPromptEl.style.height = Math.min(tbPromptEl.scrollHeight + 2, 120) + 'px';
+        }
+        tbPromptEl.addEventListener('input', () => {
+            const p = document.getElementById('prompt');
+            p.value = tbPromptEl.value;
+            try { localStorage.setItem(DRAFT_PROMPT_KEY, p.value); } catch (_) {}
+            scheduleDraftSave();
+            tbAutoGrow();
+        });
+
+        // Keep the prompt bar above the iOS keyboard.
+        if (window.visualViewport) {
+            const kb = () => {
+                const vv = window.visualViewport;
+                const off = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+                document.getElementById('tbBottom').style.transform = off ? `translateY(${-off}px)` : '';
+            };
+            window.visualViewport.addEventListener('resize', kb);
+            window.visualViewport.addEventListener('scroll', kb);
+        }
+
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'hidden' && tbMetaTimer) tbSaveMetaNow();
+        });
+        window.addEventListener('pagehide', () => { if (tbMetaTimer) tbSaveMetaNow(); });
+
+        // ---- Boot --------------------------------------------------------
+        (async () => {
+            let saved = 'CLASSIC';
+            try { saved = localStorage.getItem(TB_VIEW_KEY) || 'CLASSIC'; } catch (_) {}
+            if (saved === 'TABLE') await setView('TABLE', { initial: true });
+            else document.querySelectorAll('[data-view-switch] button').forEach(b => b.classList.toggle('on', b.dataset.view === 'CLASSIC'));
+            await tbLoad();
+            if (tbView === 'TABLE') {
+                // The prompt draft may have been restored after we switched.
+                await draftReady;
+                tbPromptEl.value = document.getElementById('prompt').value;
+                tbAutoGrow();
+            }
+        })();
     </script>
 </body>
 </html>
