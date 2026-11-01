@@ -2344,7 +2344,7 @@
         // adds a result slot on top of the output stack, and runs independently.
 
         let activeGenerations = 0;
-        const APP_BUILD = 'b42';
+        const APP_BUILD = 'b43';
         function updateGlobalStatus() {
             const s = document.getElementById('statusMsg');
             s.style.color = '#a0a0a0';
@@ -3174,6 +3174,8 @@
         const TB_VIEW_KEY = 'nb_view';
         const TB_META_KEY = 'table_meta';
         const TB_BLOB_PREFIX = 'tbl:';
+        const TB_UNDO_KEY = 'table_undo';
+        const TB_UNDO_V_PREFIX = 'tbuv:';
         const TB_LONGPRESS_MS = 480;
         const TB_DRAG_SLOP = 8;
         const TB_SMALL = 0.3;
@@ -3256,6 +3258,7 @@
             tbLoaded = true;
             tbSaveMeta();
             tbRender();
+            tbLoadUndo();
         }
 
         // ---- Items -------------------------------------------------------
@@ -3305,6 +3308,83 @@
         function tbUndoUi() {
             document.getElementById('tbUndoBtn').disabled = !tbUndoStack.length;
             document.getElementById('tbRedoBtn').disabled = !tbRedoStack.length;
+            tbSaveUndo();
+        }
+
+        // Persistence: each snapshot is stored as layout only; image content
+        // ({url, thumb, mask, gen}) lives once per distinct version under its
+        // own key and is shared by every snapshot that uses it.
+        const TB_CONTENT_KEYS = ['url', 'thumb', 'mask', 'gen'];
+        const tbUndoVers = new Map();   // item id -> [{key, c}]
+        let tbUndoSeq = 0, tbUndoTimer = null, tbUndoReady = false;
+        function tbShallowEq(a, b) {
+            if (a === b) return true;
+            if (!a || !b) return false;
+            const ka = Object.keys(a), kb = Object.keys(b);
+            return ka.length === kb.length && ka.every(k => a[k] === b[k]);
+        }
+        function tbContentEq(a, b) {
+            return a.url === b.url && a.thumb === b.thumb && tbShallowEq(a.mask, b.mask) && tbShallowEq(a.gen, b.gen);
+        }
+        function tbSaveUndo() {
+            if (!tbUndoReady) return;
+            clearTimeout(tbUndoTimer);
+            tbUndoTimer = setTimeout(tbSaveUndoNow, 600);
+        }
+        function tbSaveUndoNow() {
+            const used = new Set(), writes = [];
+            const enc = (snap) => snap.map((i) => {
+                const vers = tbUndoVers.get(i.id) || [];
+                let v = vers.find(x => tbContentEq(x.c, i));
+                if (!v) {
+                    const c = {};
+                    TB_CONTENT_KEYS.forEach(k => { c[k] = i[k] ?? null; });
+                    v = { key: TB_UNDO_V_PREFIX + Date.now().toString(36) + '-' + (tbUndoSeq++), c };
+                    vers.push(v);
+                    tbUndoVers.set(i.id, vers);
+                    writes.push(v);
+                }
+                used.add(v.key);
+                const o = { v: v.key };
+                TB_SNAP_KEYS.forEach(k => { if (!TB_CONTENT_KEYS.includes(k)) o[k] = i[k]; });
+                return o;
+            });
+            const rec = { undo: tbUndoStack.map(enc), redo: tbRedoStack.map(enc) };
+            writes.forEach(v => tbIdb('put', v.key, v.c));
+            tbIdb('put', TB_UNDO_KEY, rec);
+            // Drop versions no snapshot refers to any more.
+            tbUndoVers.forEach((vers, id) => {
+                const keep = vers.filter(v => used.has(v.key));
+                vers.forEach(v => { if (!used.has(v.key)) tbIdb('delete', v.key); });
+                if (keep.length) tbUndoVers.set(id, keep); else tbUndoVers.delete(id);
+            });
+        }
+        async function tbLoadUndo() {
+            const rec = await tbIdb('get', TB_UNDO_KEY);
+            if (rec && Array.isArray(rec.undo)) {
+                const keys = new Set();
+                [...rec.undo, ...(rec.redo || [])].forEach(sn => sn.forEach(i => keys.add(i.v)));
+                const contents = new Map();
+                await Promise.all([...keys].map(async (k) => {
+                    const c = await tbIdb('get', k);
+                    if (c && c.url) contents.set(k, c);
+                }));
+                const dec = (snap) => snap.filter(i => contents.has(i.v)).map((i) => {
+                    const c = contents.get(i.v);
+                    const vers = tbUndoVers.get(i.id) || [];
+                    if (!vers.some(x => x.key === i.v)) vers.push({ key: i.v, c });
+                    tbUndoVers.set(i.id, vers);
+                    const o = { ...i, ...c };
+                    delete o.v;
+                    return o;
+                });
+                // Anything already done this session stays on top.
+                tbUndoStack.unshift(...rec.undo.map(dec));
+                if (!tbRedoStack.length) tbRedoStack.push(...(rec.redo || []).map(dec));
+                while (tbUndoStack.length > TB_UNDO_MAX) tbUndoStack.shift();
+            }
+            tbUndoReady = true;
+            tbUndoUi();
         }
         function tbPushUndoSnap(snap) {
             tbUndoStack.push(snap);
@@ -3316,6 +3396,7 @@
         function tbAddToSnapshots(item) {
             const it = tbSnapItem(item);
             [...tbUndoStack, ...tbRedoStack].forEach(snap => { if (!snap.some(i => i.id === it.id)) snap.push({ ...it }); });
+            tbSaveUndo();
         }
         function tbRestore(snap) {
             const cur = new Map(tbItems.filter(i => !i.pending && !i.error).map(i => [i.id, i]));
