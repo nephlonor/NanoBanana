@@ -2306,7 +2306,7 @@
         // adds a result slot on top of the output stack, and runs independently.
 
         let activeGenerations = 0;
-        const APP_BUILD = 'b35';
+        const APP_BUILD = 'b36';
         function updateGlobalStatus() {
             const s = document.getElementById('statusMsg');
             s.style.color = '#a0a0a0';
@@ -3354,67 +3354,150 @@
         }
 
         // ---- Gestures ----------------------------------------------------
-        let tbPtr = null;
+        // One gesture at a time, on one item. One finger drags it like a
+        // sheet of paper on a table: pulled off-centre, the centre of mass
+        // swings in behind the finger, damped by TB_SPIN (friction). A second
+        // finger (on the item or anywhere on the table) turns it with the
+        // two-finger line.
+        const TB_SPIN = 0.35;      // 0 = never turns, 1 = turns freely
+        let tbG = null;            // {id, pts: Map(pid -> {x,y}), sx, sy, moved, trash, timer, W, H, L, T}
 
         function tbOverTrash(x, y) {
             const r = document.getElementById('tbTrash').getBoundingClientRect();
             return x >= r.left - 24 && x <= r.right + 24 && y >= r.top - 24 && y <= r.bottom + 24;
         }
 
+        function tbGestureEnd() {
+            const g = tbG;
+            if (!g) return;
+            tbG = null;
+            clearTimeout(g.timer);
+            for (const pid of g.pts.keys()) { try { tbView$.releasePointerCapture(pid); } catch (_) {} }
+            document.getElementById('tbBacklog').classList.remove('hot');
+            document.getElementById('tbTrash').classList.remove('hot');
+        }
+
+        function tbBeginMove(item) {
+            if (tbG.moved) return;
+            tbG.moved = true;
+            clearTimeout(tbG.timer);
+            item._drag = true;
+            item.z = tbZ++;
+            const el = tbEls.get(item.id);
+            el.classList.add('dragging');
+            tbApplyTransform(el, item);
+        }
+
         function tbPointerDown(e, id) {
-            if (tbPtr || (e.pointerType === 'mouse' && e.button !== 0)) return;
-            const item = tbFind(id);
+            if (e.pointerType === 'mouse' && e.button !== 0) return;
+            // A primary pointer means nothing else is touching: a gesture still
+            // on record lost its pointerup (e.g. a modal opened over it) and
+            // must not lock the table.
+            if (tbG && e.isPrimary) {
+                const stale = tbFind(tbG.id);
+                tbGestureEnd();
+                if (stale && stale._drag) { stale._drag = false; tbSaveMeta(); tbRender(); }
+            }
+            if (tbG) {
+                // Second finger: rotate.
+                if (tbG.pts.size >= 2) return;
+                const item = tbFind(tbG.id);
+                if (!item) { tbGestureEnd(); return; }
+                e.preventDefault(); e.stopPropagation();
+                tbG.pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+                try { tbView$.setPointerCapture(e.pointerId); } catch (_) {}
+                tbBeginMove(item);
+                tbG.trash = false;
+                document.getElementById('tbTrash').classList.remove('hot');
+                return;
+            }
+            const item = id == null ? null : tbFind(id);
             if (!item) return;
-            e.preventDefault();
+            e.preventDefault(); e.stopPropagation();
             const r = tbView$.getBoundingClientRect();
-            tbPtr = {
-                id, pid: e.pointerId, sx: e.clientX, sy: e.clientY,
-                ox: item.x, oy: item.y, W: r.width, H: r.height, top: r.top,
-                moved: false, long: false,
+            tbG = {
+                id, pts: new Map([[e.pointerId, { x: e.clientX, y: e.clientY }]]),
+                sx: e.clientX, sy: e.clientY, moved: false, trash: false,
+                W: r.width, H: r.height, L: r.left, T: r.top,
                 timer: setTimeout(() => {
-                    if (!tbPtr || tbPtr.moved) return;
-                    tbPtr.long = true;
+                    if (!tbG || tbG.id !== id || tbG.moved) return;
                     if (navigator.vibrate) navigator.vibrate(30);
+                    // The long press is the whole gesture — end it now instead
+                    // of waiting for a pointerup the opening modal may swallow.
+                    tbGestureEnd();
                     tbLongPress(item);
                 }, TB_LONGPRESS_MS)
             };
             try { tbView$.setPointerCapture(e.pointerId); } catch (_) {}
         }
+        // Second finger landing on the bare table (not on the controls).
+        tbView$.addEventListener('pointerdown', (e) => {
+            if (tbG && !e.target.closest('.tb-top, .tb-bottom, #tbSettings')) tbPointerDown(e, null);
+        });
 
         tbView$.addEventListener('pointermove', (e) => {
-            if (!tbPtr || e.pointerId !== tbPtr.pid || tbPtr.long) return;
-            const dx = e.clientX - tbPtr.sx, dy = e.clientY - tbPtr.sy;
-            const item = tbFind(tbPtr.id);
-            if (!item) return;
-            if (!tbPtr.moved) {
-                if (Math.hypot(dx, dy) < TB_DRAG_SLOP) return;
-                tbPtr.moved = true;
-                clearTimeout(tbPtr.timer);
-                item._drag = true;
-                item.z = tbZ++;
-                tbEls.get(item.id).classList.add('dragging');
+            if (!tbG || !tbG.pts.has(e.pointerId)) return;
+            const g = tbG;
+            const item = tbFind(g.id);
+            if (!item) { tbGestureEnd(); return; }
+            const prev = g.pts.get(e.pointerId);
+            const cur = { x: e.clientX, y: e.clientY };
+            if (!g.moved) {
+                if (Math.hypot(cur.x - g.sx, cur.y - g.sy) < TB_DRAG_SLOP) return;
+                tbBeginMove(item);
             }
-            item.x = Math.min(1, Math.max(0, tbPtr.ox + dx / tbPtr.W));
-            item.y = Math.min(1, Math.max(0, tbPtr.oy + dy / tbPtr.H));
-            const small = (e.clientY - tbPtr.top) < tbPtr.H / 3;
-            item.small = small;
-            document.getElementById('tbBacklog').classList.toggle('hot', small);
-            document.getElementById('tbTrash').classList.toggle('hot', tbOverTrash(e.clientX, e.clientY));
+            let cx = g.L + item.x * g.W, cy = g.T + item.y * g.H;
+            let dth, px, py, nx, ny, fy;
+            const other = g.pts.size >= 2 ? [...g.pts].find(([pid]) => pid !== e.pointerId)[1] : null;
+            if (other) {
+                // Two fingers: turn with the line between them, move with its midpoint.
+                dth = Math.atan2(cur.y - other.y, cur.x - other.x) - Math.atan2(prev.y - other.y, prev.x - other.x);
+                if (dth > Math.PI) dth -= 2 * Math.PI;
+                if (dth < -Math.PI) dth += 2 * Math.PI;
+                px = (prev.x + other.x) / 2; py = (prev.y + other.y) / 2;
+                nx = (cur.x + other.x) / 2; ny = (cur.y + other.y) / 2;
+                fy = ny;
+            } else {
+                // One finger: torque = lever (grab point − centre) × pull. The
+                // lever turns towards the pull until the centre trails behind
+                // the finger; a grab near the centre barely turns.
+                const el = tbEls.get(item.id);
+                const sc = item.small ? TB_SMALL : 1;
+                const R2 = Math.max(1600, (el.offsetWidth * el.offsetWidth + el.offsetHeight * el.offsetHeight) / 4 * sc * sc);
+                const rx = prev.x - cx, ry = prev.y - cy;
+                const dx = cur.x - prev.x, dy = cur.y - prev.y;
+                dth = Math.max(-0.2, Math.min(0.2, TB_SPIN * (rx * dy - ry * dx) / R2));
+                px = prev.x; py = prev.y; nx = cur.x; ny = cur.y;
+                fy = cur.y;
+            }
+            // Rotate the centre about the pivot, then carry it along.
+            const c = Math.cos(dth), s = Math.sin(dth);
+            const vx = cx - px, vy = cy - py;
+            cx = nx + c * vx - s * vy;
+            cy = ny + s * vx + c * vy;
+            item.rot = ((item.rot || 0) + dth * 180 / Math.PI) % 360;
+            item.x = Math.min(1, Math.max(0, (cx - g.L) / g.W));
+            item.y = Math.min(1, Math.max(0, (cy - g.T) / g.H));
+            g.pts.set(e.pointerId, cur);
+            item.small = (fy - g.T) < g.H / 3;
+            g.trash = !other && tbOverTrash(cur.x, cur.y);
+            document.getElementById('tbBacklog').classList.toggle('hot', item.small);
+            document.getElementById('tbTrash').classList.toggle('hot', g.trash);
             tbApplyTransform(tbEls.get(item.id), item);
         });
 
         function tbPointerEnd(e) {
-            if (!tbPtr || e.pointerId !== tbPtr.pid) return;
-            const p = tbPtr;
-            tbPtr = null;
-            clearTimeout(p.timer);
-            document.getElementById('tbBacklog').classList.remove('hot');
-            document.getElementById('tbTrash').classList.remove('hot');
-            const item = tbFind(p.id);
+            if (!tbG || !tbG.pts.has(e.pointerId)) return;
+            const g = tbG;
+            g.pts.delete(e.pointerId);
+            try { tbView$.releasePointerCapture(e.pointerId); } catch (_) {}
+            if (g.pts.size) return;   // the other finger keeps dragging
+            tbGestureEnd();
+            const item = tbFind(g.id);
             if (!item) return;
-            if (p.moved) {
+            if (g.moved) {
                 item._drag = false;
-                if (e.type !== 'pointercancel' && tbOverTrash(e.clientX, e.clientY)) {
+                if (e.type === 'pointerup' && g.trash && tbOverTrash(e.clientX, e.clientY)) {
                     tbRemove(item.id);
                     return;
                 }
@@ -3422,7 +3505,7 @@
                 tbRender();
                 return;
             }
-            if (p.long || e.type === 'pointercancel') return;
+            if (e.type !== 'pointerup') return;
             // Tap
             if (item.error) { tbRetry(item); return; }
             if (item.pending) return;
@@ -3430,6 +3513,9 @@
         }
         tbView$.addEventListener('pointerup', tbPointerEnd);
         tbView$.addEventListener('pointercancel', tbPointerEnd);
+        tbView$.addEventListener('lostpointercapture', (e) => {
+            if (tbG && tbG.pts.has(e.pointerId)) tbPointerEnd({ type: 'lostpointercapture', pointerId: e.pointerId, clientX: e.clientX, clientY: e.clientY });
+        });
         tbView$.addEventListener('contextmenu', (e) => { if (!e.target.closest('#tbSettings')) e.preventDefault(); });
 
         document.getElementById('tbTrash').addEventListener('click', () => {
