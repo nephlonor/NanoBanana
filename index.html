@@ -75,7 +75,7 @@
         .view-switch { display: inline-flex; background: #3a3d3c; padding: 3px; border-radius: 999px; }
         .view-switch button { padding: 5px 16px; border-radius: 999px; font-size: 12px; font-weight: 700; color: #cfcfcf; }
         .view-switch button.on { background: #f0f0f0; color: #1b1b1b; }
-        body.table-on { overflow: hidden; }
+        html.table-on, body.table-on { overflow: hidden; overscroll-behavior: none; }
         body.table-on #classicRoot, body.table-on > .view-switch { display: none; }
         #tableView {
             position: fixed; inset: 0; z-index: 50; display: none; overflow: hidden;
@@ -2344,7 +2344,7 @@
         // adds a result slot on top of the output stack, and runs independently.
 
         let activeGenerations = 0;
-        const APP_BUILD = 'b43';
+        const APP_BUILD = 'b44';
         function updateGlobalStatus() {
             const s = document.getElementById('statusMsg');
             s.style.color = '#a0a0a0';
@@ -4398,10 +4398,12 @@
                     tbPromptEl.value = document.getElementById('prompt').value;
                     tbAdoptControls();
                     document.body.classList.add('table-on');
+                    tbPinViewport(true);
                 } else {
                     tbOpenSettings(false);
                     tbReturnControls();
                     document.body.classList.remove('table-on');
+                    tbPinViewport(false);
                     if (!first) await tbToClassic();
                 }
                 tbView = v;
@@ -4426,16 +4428,49 @@
             tbAutoGrow();
         });
 
-        // Keep the prompt bar above the iOS keyboard.
-        if (window.visualViewport) {
-            const kb = () => {
-                const vv = window.visualViewport;
-                const off = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
-                document.getElementById('tbBottom').style.transform = off ? `translateY(${-off}px)` : '';
-            };
-            window.visualViewport.addEventListener('resize', kb);
-            window.visualViewport.addEventListener('scroll', kb);
+        // Table mode must always fill the screen with its top icons reachable.
+        // A pinch-zoom carried over from Classic, or a page scroll left behind
+        // by the iOS keyboard, can push the fixed layer partly off-screen —
+        // so lock zoom while in Table, reset scroll, and pin the top bar to
+        // the visible viewport.
+        const tbViewportMeta = document.querySelector('meta[name="viewport"]');
+        const tbViewportOrig = tbViewportMeta ? tbViewportMeta.content : '';
+        function tbPinViewport(on) {
+            document.documentElement.classList.toggle('table-on', on);
+            if (tbViewportMeta) {
+                tbViewportMeta.content = on
+                    ? 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no'
+                    : tbViewportOrig;
+            }
+            if (on) window.scrollTo(0, 0);
+            tbSyncViewport();
         }
+
+        // Keep the top bar in view and the prompt bar above the iOS keyboard.
+        function tbSyncViewport() {
+            const top = document.querySelector('#tableView .tb-top');
+            const bottom = document.getElementById('tbBottom');
+            const vv = window.visualViewport;
+            if (tbView !== 'TABLE' && !document.body.classList.contains('table-on')) {
+                top.style.transform = ''; bottom.style.transform = '';
+                return;
+            }
+            if (!vv) { if (window.scrollY || window.scrollX) window.scrollTo(0, 0); return; }
+            const kbOpen = window.innerHeight - vv.height > 80 && document.activeElement === tbPromptEl;
+            if (!kbOpen && (window.scrollY || window.scrollX)) window.scrollTo(0, 0);
+            const offTop = Math.max(0, vv.offsetTop);
+            const offLeft = Math.max(0, vv.offsetLeft);
+            top.style.transform = (offTop || offLeft) ? `translate(${offLeft}px, ${offTop}px)` : '';
+            const off = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+            bottom.style.transform = off ? `translateY(${-off}px)` : '';
+        }
+        if (window.visualViewport) {
+            window.visualViewport.addEventListener('resize', tbSyncViewport);
+            window.visualViewport.addEventListener('scroll', tbSyncViewport);
+        }
+        window.addEventListener('scroll', () => { if (tbView === 'TABLE') tbSyncViewport(); }, { passive: true });
+        window.addEventListener('orientationchange', () => setTimeout(tbSyncViewport, 300));
+        tbPromptEl.addEventListener('blur', () => setTimeout(tbSyncViewport, 250));
 
         document.addEventListener('visibilitychange', () => {
             if (document.visibilityState === 'hidden' && tbMetaTimer) tbSaveMetaNow();
