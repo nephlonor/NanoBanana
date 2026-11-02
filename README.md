@@ -1,4 +1,4 @@
 # NanoBanana
 clean NanoBanana Pro and 2 integration
 
-**Setup:** see [docs/SETUP.md](docs/SETUP.md) for configuring a new Google Cloud project.
+**Neuen Google-Cloud-Account verlinken:** siehe [docs/NEUEN_ACCOUNT_VERLINKEN.md](docs/NEUEN_ACCOUNT_VERLINKEN.md).

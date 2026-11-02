@@ -1,6 +1,6 @@
-# Setting up a Google Cloud project for NanoBanana
+# Neuen Account verlinken
 
-Step-by-step setup for a **fresh** Google Cloud project. It assumes the Google
+Step-by-step guide for linking a **fresh** Google Cloud account/project to NanoBanana. It assumes the Google
 Cloud account exists and a billing account / payment method is already linked
 to the project.
 
@@ -9,7 +9,6 @@ Placeholders used below — replace them with your own values:
 | Placeholder | What it is | Where to find it |
 |---|---|---|
 | `PROJECT_ID` | The project **ID** (not the display name) | Console project picker, "ID" column |
-| `APP_ORIGIN` | Scheme + host the app is served from, no path, no trailing slash | Browser address bar, e.g. `https://<github-user>.github.io` |
 | `YOUR_EMAIL` | The Google account you sign in to the app with | — |
 
 > **Naming note:** Vertex AI was renamed **Gemini Enterprise Agent Platform**
@@ -49,11 +48,17 @@ Console: **Google Auth Platform → Clients** → <https://console.cloud.google.
 → **Create client**.
 
 - **Application type:** **Web application** (not Desktop/iOS/Android).
-- **Authorized JavaScript origins:** `APP_ORIGIN`
-  - Origin only: `https://<github-user>.github.io` — **not**
-    `https://<github-user>.github.io/NanoBanana/`, no trailing slash.
-  - Add one entry per address you open the app from (e.g. a custom domain or
-    `http://localhost:8000` for local testing).
+- **Authorized JavaScript origins:** **+ Add URI** → exactly
+
+  ```
+  https://nephlonor.github.io
+  ```
+
+  The app lives at `https://nephlonor.github.io/NanoBanana/`, but Google wants
+  the **origin only** — no `/NanoBanana`, no trailing slash, `https` not
+  `http`. Entering the full app URL is rejected or silently doesn't match.
+  Only add more entries if you open the app from somewhere else (e.g.
+  `http://localhost:8000` for local testing).
 - **Authorized redirect URIs:** leave empty.
 
 Copy the **Client ID** (format `123456789012-xxxx.apps.googleusercontent.com`).
@@ -112,7 +117,7 @@ Tap **error details** in Google's "Access blocked" popup to see the exact code.
 | Message | Cause | Fix |
 |---|---|---|
 | **The OAuth client was not found** / `invalid_client` | The Client ID in the app doesn't exist: old ID from another project, truncated copy, stray space, or a secret/API key pasted instead | Re-copy the Client ID from **Clients** (step 3), clear the field, paste, Save, reload |
-| `origin_mismatch` / `redirect_uri_mismatch` | `APP_ORIGIN` isn't in **Authorized JavaScript origins**, or was entered with a path / trailing slash | Fix the origin (step 3), wait 5–10 min |
+| `origin_mismatch` / `redirect_uri_mismatch` | `https://nephlonor.github.io` isn't in **Authorized JavaScript origins**, or was entered with `/NanoBanana` / a trailing slash | Fix the origin (step 3), wait 5–10 min |
 | **…has not completed the Google verification process** / `access_denied` | The account you picked isn't a test user | Add it under **Audience → Test users** (step 2) |
 | Error appears **before** an account chooser shows | Problem with the client itself (wrong ID, wrong type, origin) — not the test-user list | Check step 3 |
 | `Permission 'aiplatform.endpoints.predict' denied … (or it may not exist)` | The signed-in account has no Vertex role on this project, **or** you're signed in with a different account than intended (the app remembers the last account) | Check which account the panel shows; switch account or grant the role (step 4). The Troubleshooter link in the error names the principal that was checked |
