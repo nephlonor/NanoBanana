@@ -195,14 +195,8 @@
         #tbCmpBox { position: relative; flex: none; }
         #tbCmpBox img { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; -webkit-user-drag: none; }
         #tbCmpLine {
-            position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: #fff;
-            box-shadow: 0 0 6px rgba(0,0,0,0.6); pointer-events: none;
-        }
-        #tbCmpLine::after {
-            content: '‹ ›'; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-            width: 38px; height: 38px; border-radius: 50%; background: #fff; color: #1b1b1b;
-            display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 16px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.5);
+            position: absolute; top: 0; bottom: 0; width: 1px; margin-left: -0.5px; background: #fff;
+            box-shadow: 0 0 2px rgba(0,0,0,0.5); pointer-events: none;
         }
         #tbCmpBar {
             position: absolute; left: 0; right: 0; bottom: 0; height: calc(76px + env(safe-area-inset-bottom));
@@ -2388,7 +2382,7 @@
         // adds a result slot on top of the output stack, and runs independently.
 
         let activeGenerations = 0;
-        const APP_BUILD = 'b51';
+        const APP_BUILD = 'b52';
         function updateGlobalStatus() {
             const s = document.getElementById('statusMsg');
             s.style.color = '#a0a0a0';
