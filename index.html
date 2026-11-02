@@ -2382,7 +2382,7 @@
         // adds a result slot on top of the output stack, and runs independently.
 
         let activeGenerations = 0;
-        const APP_BUILD = 'b53';
+        const APP_BUILD = 'b54';
         function updateGlobalStatus() {
             const s = document.getElementById('statusMsg');
             s.style.color = '#a0a0a0';
@@ -4629,10 +4629,8 @@
 
         // ---- Boot --------------------------------------------------------
         (async () => {
-            let saved = 'CLASSIC';
-            try { saved = localStorage.getItem(TB_VIEW_KEY) || 'CLASSIC'; } catch (_) {}
-            if (saved === 'TABLE') await setView('TABLE', { initial: true });
-            else document.querySelectorAll('[data-view-switch] button').forEach(b => b.classList.toggle('on', b.dataset.view === 'CLASSIC'));
+            // Always start in Table view, regardless of the last-used view.
+            await setView('TABLE', { initial: true });
             await tbLoad();
             if (tbView === 'TABLE') {
                 // The prompt draft may have been restored after we switched.
