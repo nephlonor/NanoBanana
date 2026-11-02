@@ -204,10 +204,6 @@
             display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 16px;
             box-shadow: 0 2px 8px rgba(0,0,0,0.5);
         }
-        .tb-cmp-tag {
-            position: absolute; top: 8px; font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
-            color: #fff; background: rgba(0,0,0,0.55); padding: 3px 8px; border-radius: 999px; pointer-events: none;
-        }
         #tbCmpBar {
             position: absolute; left: 0; right: 0; bottom: 0; height: calc(76px + env(safe-area-inset-bottom));
             padding-bottom: env(safe-area-inset-bottom); display: flex; align-items: center; justify-content: center;
@@ -509,8 +505,6 @@
             <div id="tbCmpBox">
                 <img id="tbCmpNew" alt="" draggable="false">
                 <img id="tbCmpOld" alt="" draggable="false">
-                <span class="tb-cmp-tag" style="left:8px">Older</span>
-                <span class="tb-cmp-tag" style="right:8px">Newer</span>
                 <div id="tbCmpLine"></div>
             </div>
         </div>
@@ -2394,7 +2388,7 @@
         // adds a result slot on top of the output stack, and runs independently.
 
         let activeGenerations = 0;
-        const APP_BUILD = 'b50';
+        const APP_BUILD = 'b51';
         function updateGlobalStatus() {
             const s = document.getElementById('statusMsg');
             s.style.color = '#a0a0a0';
