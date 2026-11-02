@@ -181,6 +181,38 @@
             padding-bottom: env(safe-area-inset-bottom); display: flex; align-items: center; justify-content: center;
         }
         #tbVSave { padding: 12px 36px; border-radius: 14px; font-weight: 700; font-size: 15px; }
+        #tbCompare { display: none; }
+        #tbCompare.show { display: flex; }
+        #tbCmp {
+            position: fixed; inset: 0; z-index: 93; background: #000; display: none;
+            touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+        }
+        #tbCmp.open { display: block; }
+        #tbCmpStage {
+            position: absolute; left: 0; right: 0; top: 0; bottom: calc(76px + env(safe-area-inset-bottom));
+            display: flex; align-items: center; justify-content: center; overflow: hidden;
+        }
+        #tbCmpBox { position: relative; flex: none; }
+        #tbCmpBox img { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; -webkit-user-drag: none; }
+        #tbCmpLine {
+            position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: #fff;
+            box-shadow: 0 0 6px rgba(0,0,0,0.6); pointer-events: none;
+        }
+        #tbCmpLine::after {
+            content: '‹ ›'; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            width: 38px; height: 38px; border-radius: 50%; background: #fff; color: #1b1b1b;
+            display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 16px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.5);
+        }
+        .tb-cmp-tag {
+            position: absolute; top: 8px; font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
+            color: #fff; background: rgba(0,0,0,0.55); padding: 3px 8px; border-radius: 999px; pointer-events: none;
+        }
+        #tbCmpBar {
+            position: absolute; left: 0; right: 0; bottom: 0; height: calc(76px + env(safe-area-inset-bottom));
+            padding-bottom: env(safe-area-inset-bottom); display: flex; align-items: center; justify-content: center;
+        }
+        #tbCmpDone { padding: 12px 36px; border-radius: 14px; font-weight: 700; font-size: 15px; }
         #tbToast {
             position: fixed; left: 50%; bottom: 140px; transform: translateX(-50%); z-index: 95; pointer-events: none;
             background: rgba(10,10,10,0.9); color: #eee; font-size: 12px; padding: 8px 14px; border-radius: 999px;
@@ -401,9 +433,14 @@
                     <button data-view="CLASSIC" onclick="setView('CLASSIC')">Classic</button>
                     <button data-view="TABLE" onclick="setView('TABLE')">Table</button>
                 </div>
+                <div class="tb-group">
+                <button id="tbCompare" class="tb-icon" title="Compare the two selected images" onclick="tbOpenCompare()">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M12 2v20"/><path d="M8 10l-2 2 2 2M16 10l2 2-2 2"/></svg>
+                </button>
                 <button id="tbGear" class="tb-icon" title="Settings" onclick="tbOpenSettings(true)">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
                 </button>
+                </div>
             </div>
             <button id="tbClear" onclick="tbClearTable()">Clear Table</button>
         </div>
@@ -466,6 +503,19 @@
     </div>
 
     <div id="tbToast"></div>
+
+    <div id="tbCmp">
+        <div id="tbCmpStage">
+            <div id="tbCmpBox">
+                <img id="tbCmpNew" alt="" draggable="false">
+                <img id="tbCmpOld" alt="" draggable="false">
+                <span class="tb-cmp-tag" style="left:8px">Older</span>
+                <span class="tb-cmp-tag" style="right:8px">Newer</span>
+                <div id="tbCmpLine"></div>
+            </div>
+        </div>
+        <div id="tbCmpBar"><button id="tbCmpDone" class="bg-accent" onclick="tbCloseCompare()">Done</button></div>
+    </div>
 
     <div id="tbViewer">
         <div id="tbVStage"><img id="tbVImg" alt="" draggable="false"></div>
@@ -2344,7 +2394,7 @@
         // adds a result slot on top of the output stack, and runs independently.
 
         let activeGenerations = 0;
-        const APP_BUILD = 'b49';
+        const APP_BUILD = 'b50';
         function updateGlobalStatus() {
             const s = document.getElementById('statusMsg');
             s.style.color = '#a0a0a0';
@@ -3549,7 +3599,69 @@
                 : n === 0 ? 'Nothing selected — generates from the prompt only'
                 : masked ? `Inpaint with mask${n > 1 ? ` + ${n - 1} reference${n > 2 ? 's' : ''}` : ''}`
                 : `${n} selected · #1 is the base`;
+            document.getElementById('tbCompare').classList.toggle('show', !!tbComparePair());
         }
+
+        // ---- Compare -----------------------------------------------------
+        // Exactly two selected images with the same aspect ratio: returns
+        // [older, newer] (ids are creation timestamps), else null.
+        function tbComparePair() {
+            const s = tbSelected();
+            if (s.length !== 2 || s.some(i => !i.url || !i.w || !i.h)) return null;
+            const a = s[0].w / s[0].h, b = s[1].w / s[1].h;
+            if (Math.abs(a - b) / a > 0.01) return null;
+            return s[0].id <= s[1].id ? s : [s[1], s[0]];
+        }
+        const tbCmp = { el: document.getElementById('tbCmp'), pos: 0.5, ar: 1, drag: false };
+        function tbCmpLayout() {
+            const stage = document.getElementById('tbCmpStage').getBoundingClientRect();
+            const box = document.getElementById('tbCmpBox');
+            const k = Math.min(stage.width / tbCmp.ar, stage.height);
+            box.style.width = Math.round(k * tbCmp.ar) + 'px';
+            box.style.height = Math.round(k) + 'px';
+            tbCmpApply();
+        }
+        function tbCmpApply() {
+            const p = (tbCmp.pos * 100).toFixed(3) + '%';
+            document.getElementById('tbCmpLine').style.left = p;
+            document.getElementById('tbCmpOld').style.clipPath = `inset(0 calc(100% - ${p}) 0 0)`;
+        }
+        function tbOpenCompare() {
+            const pair = tbComparePair();
+            if (!pair) return;
+            const [older, newer] = pair;
+            document.getElementById('tbCmpOld').src = older.url;
+            document.getElementById('tbCmpNew').src = newer.url;
+            tbCmp.ar = newer.w / newer.h;
+            tbCmp.pos = 0.5;
+            tbCmp.el.classList.add('open');
+            tbCmpLayout();
+        }
+        function tbCloseCompare() {
+            tbCmp.el.classList.remove('open');
+            tbCmp.drag = false;
+            document.getElementById('tbCmpOld').removeAttribute('src');
+            document.getElementById('tbCmpNew').removeAttribute('src');
+        }
+        (() => {
+            const stage = document.getElementById('tbCmpStage');
+            const move = (e) => {
+                const r = document.getElementById('tbCmpBox').getBoundingClientRect();
+                tbCmp.pos = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
+                tbCmpApply();
+            };
+            stage.addEventListener('pointerdown', (e) => {
+                tbCmp.drag = true;
+                try { stage.setPointerCapture(e.pointerId); } catch (_) {}
+                move(e);
+            });
+            stage.addEventListener('pointermove', (e) => { if (tbCmp.drag) move(e); });
+            const end = () => { tbCmp.drag = false; };
+            stage.addEventListener('pointerup', end);
+            stage.addEventListener('pointercancel', end);
+            window.addEventListener('resize', () => { if (tbCmp.el.classList.contains('open')) tbCmpLayout(); });
+            document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && tbCmp.el.classList.contains('open')) tbCloseCompare(); });
+        })();
 
         // ---- Gestures ----------------------------------------------------
         // One gesture at a time, on one item. One finger drags it like a
