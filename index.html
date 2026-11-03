@@ -2382,7 +2382,7 @@
         // adds a result slot on top of the output stack, and runs independently.
 
         let activeGenerations = 0;
-        const APP_BUILD = 'b54';
+        const APP_BUILD = 'b55';
         function updateGlobalStatus() {
             const s = document.getElementById('statusMsg');
             s.style.color = '#a0a0a0';
@@ -3255,6 +3255,34 @@
                 tx.onerror = tx.onabort = () => { db.close(); resolve(null); };
             })).catch((e) => { console.warn('table ' + op + ' failed:', e); return null; });
         }
+        // Reads many keys over one connection and one transaction. Opening a
+        // connection per key (dozens at once, each carrying megabytes of
+        // image data) is enough to get the page killed on iOS.
+        function tbIdbGetMany(keys, onValue) {
+            if (!keys.length) return Promise.resolve();
+            return openHistoryDb().then((db) => new Promise((resolve) => {
+                const tx = db.transaction(DRAFT_STORE, 'readonly');
+                const store = tx.objectStore(DRAFT_STORE);
+                keys.forEach((k) => {
+                    const rq = store.get(k);
+                    rq.onsuccess = () => { if (rq.result != null) onValue(k, rq.result); };
+                });
+                tx.oncomplete = () => { db.close(); resolve(); };
+                tx.onerror = tx.onabort = () => { db.close(); resolve(); };
+            })).catch((e) => { console.warn('table getMany failed:', e); });
+        }
+
+        function tbIdbWriteMany(puts, dels) {
+            if (!puts.length && !dels.length) return Promise.resolve(true);
+            return openHistoryDb().then((db) => new Promise((resolve) => {
+                const tx = db.transaction(DRAFT_STORE, 'readwrite');
+                const store = tx.objectStore(DRAFT_STORE);
+                puts.forEach(([k, v]) => store.put(v, k));
+                dels.forEach(k => store.delete(k));
+                tx.oncomplete = () => { db.close(); resolve(true); };
+                tx.onerror = tx.onabort = () => { db.close(); resolve(null); };
+            })).catch((e) => { console.warn('table writeMany failed:', e); return null; });
+        }
 
         let tbMetaTimer = null;
         function tbSaveMeta() {
@@ -3277,11 +3305,14 @@
         async function tbLoad() {
             const meta = await tbIdb('get', TB_META_KEY);
             const list = (meta && Array.isArray(meta.items)) ? meta.items : [];
-            const loaded = await Promise.all(list.map(async (m) => {
-                const b = await tbIdb('get', TB_BLOB_PREFIX + m.id);
+            const blobs = new Map();
+            await tbIdbGetMany(list.map(m => TB_BLOB_PREFIX + m.id), (k, v) => blobs.set(k, v));
+            const loaded = list.map((m) => {
+                const b = blobs.get(TB_BLOB_PREFIX + m.id);
                 if (!b || !b.url) return null;
                 return { ...m, url: b.url, thumb: b.thumb || b.url, mask: b.mask || null, gen: b.gen || null };
-            }));
+            });
+            blobs.clear();
             // Anything added while loading (e.g. a fast import) stays on top.
             tbItems = loaded.filter(Boolean).concat(tbItems);
             tbItems.forEach((i) => {
@@ -3388,25 +3419,48 @@
                 return o;
             });
             const rec = { undo: tbUndoStack.map(enc), redo: tbRedoStack.map(enc) };
-            writes.forEach(v => tbIdb('put', v.key, v.c));
-            tbIdb('put', TB_UNDO_KEY, rec);
+            const puts = writes.map(v => [v.key, v.c]);
+            puts.push([TB_UNDO_KEY, rec]);
             // Drop versions no snapshot refers to any more.
+            const dels = [];
             tbUndoVers.forEach((vers, id) => {
                 const keep = vers.filter(v => used.has(v.key));
-                vers.forEach(v => { if (!used.has(v.key)) tbIdb('delete', v.key); });
+                vers.forEach(v => { if (!used.has(v.key)) dels.push(v.key); });
                 if (keep.length) tbUndoVers.set(id, keep); else tbUndoVers.delete(id);
             });
+            tbIdbWriteMany(puts, dels);
         }
         async function tbLoadUndo() {
             const rec = await tbIdb('get', TB_UNDO_KEY);
             if (rec && Array.isArray(rec.undo)) {
                 const keys = new Set();
                 [...rec.undo, ...(rec.redo || [])].forEach(sn => sn.forEach(i => keys.add(i.v)));
+                // Undo versions mostly hold the same pictures that are on the
+                // table already. IndexedDB hands back a fresh copy of every
+                // string, so without sharing them each image would sit in
+                // memory twice (or more) — swap equal content for one copy.
+                const pool = new Map();   // item id -> [content objects]
+                tbItems.forEach((i) => { if (!i.pending && !i.error) pool.set(i.id, [i]); });
+                const share = (id, c) => {
+                    const known = pool.get(id) || [];
+                    known.forEach((o) => {
+                        if (o.url === c.url) c.url = o.url;
+                        if (o.thumb === c.thumb) c.thumb = o.thumb;
+                        if (o.mask !== c.mask && tbShallowEq(o.mask, c.mask)) c.mask = o.mask;
+                        if (o.gen !== c.gen && tbShallowEq(o.gen, c.gen)) c.gen = o.gen;
+                    });
+                    known.push(c);
+                    pool.set(id, known);
+                };
+                const owner = new Map();  // version key -> item id
+                [...rec.undo, ...(rec.redo || [])].forEach(sn => sn.forEach(i => { if (!owner.has(i.v)) owner.set(i.v, i.id); }));
                 const contents = new Map();
-                await Promise.all([...keys].map(async (k) => {
-                    const c = await tbIdb('get', k);
-                    if (c && c.url) contents.set(k, c);
-                }));
+                await tbIdbGetMany([...keys], (k, c) => {
+                    if (!c || !c.url) return;
+                    share(owner.get(k), c);
+                    contents.set(k, c);
+                });
+                pool.clear();
                 const dec = (snap) => snap.filter(i => contents.has(i.v)).map((i) => {
                     const c = contents.get(i.v);
                     const vers = tbUndoVers.get(i.id) || [];
@@ -3849,7 +3903,7 @@
             if (!tbItems.length) return;
             if (!confirm('Clear the whole table? (History is kept.)')) return;
             tbCheckpoint();
-            tbItems.forEach(i => tbIdb('delete', TB_BLOB_PREFIX + i.id));
+            tbIdbWriteMany([], tbItems.map(i => TB_BLOB_PREFIX + i.id));
             tbItems = [];
             tbSel = [];
             tbSaveMetaNow();
